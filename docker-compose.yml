@@ -1,24 +1,49 @@
 services:
   postgres:
     image: postgres:latest
+    networks:
+      - revenix-net
   
   redis:
     image: redis:latest
+    ports:
+      - "6379:6379"
+    networks:
+      - revenix-net
   
   api:
     build: ./api
+    networks:
+      - revenix-net
   
   brain:
     build: ./brain
+    networks:
+      - revenix-net
   
   core:
     build: ./core
+    privileged: true
+    network_mode: host
+    depends_on:
+      - redis
   
   dashboard:
     build: ./dashboard
+    networks:
+      - revenix-net
   
   prometheus:
     image: prom/prometheus:latest
+    networks:
+      - revenix-net
   
   grafana:
     image: grafana/grafana:latest
+    networks:
+      - revenix-net
+
+networks:
+  revenix-net:
+    driver: bridge
+
