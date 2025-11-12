@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:latest
+  
+  redis:
+    image: redis:latest
+  
+  api:
+    build: ./api
+  
+  brain:
+    build: ./brain
+  
+  core:
+    build: ./core
+  
+  dashboard:
+    build: ./dashboard
+  
+  prometheus:
+    image: prom/prometheus:latest
+  
+  grafana:
+    image: grafana/grafana:latest
