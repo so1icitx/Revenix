@@ -2,3 +2,6 @@ fastapi
 uvicorn
 httpx
 pydantic
+sqlalchemy
+asyncpg
+aioredis
