@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 
 # Create async engine
 engine = create_async_engine(
-    "postgresql+asyncpg://postgres:postgres@postgres:5432/revenix",
+    "postgresql+asyncpg://revenix:revenix@postgres:5432/revenix_db",
     echo=True,
 )
 

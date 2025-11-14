@@ -1,49 +1,73 @@
 services:
   postgres:
     image: postgres:latest
+    environment:
+      POSTGRES_USER: revenix
+      POSTGRES_PASSWORD: revenix
+      POSTGRES_DB: revenix_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./deploy/sql/flows.sql:/docker-entrypoint-initdb.d/01-flows.sql
+      - ./deploy/sql/agents.sql:/docker-entrypoint-initdb.d/02-agents.sql
     networks:
       - revenix-net
-  
+
   redis:
     image: redis:latest
     ports:
       - "6379:6379"
     networks:
       - revenix-net
-  
+
   api:
     build: ./api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://revenix:revenix@postgres:5432/revenix_db
+      - REDIS_URL=redis://redis:6379
     networks:
       - revenix-net
-  
+
   brain:
     build: ./brain
     networks:
       - revenix-net
-  
+
   core:
     build: ./core
     privileged: true
-    network_mode: host
     depends_on:
       - redis
-  
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_URL=http://api:8000
+    networks:
+      - revenix-net
+
   dashboard:
     build: ./dashboard
     networks:
       - revenix-net
-  
+
   prometheus:
     image: prom/prometheus:latest
     networks:
       - revenix-net
-  
+
   grafana:
     image: grafana/grafana:latest
     networks:
       - revenix-net
 
+volumes:
+  postgres_data:
+
 networks:
   revenix-net:
     driver: bridge
-

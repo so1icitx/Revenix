@@ -10,6 +10,6 @@ CREATE TABLE flows (
     bytes BIGINT NOT NULL,
     packets BIGINT NOT NULL,
     start_ts BIGINT NOT NULL,
-    end_ts BIGINT NOT NULL
+    end_ts BIGINT NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
