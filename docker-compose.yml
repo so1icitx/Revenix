@@ -52,6 +52,10 @@ services:
 
   dashboard:
     build: ./dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://api:8000
     networks:
       - revenix-net
 
