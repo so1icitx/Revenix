@@ -42,14 +42,14 @@ services:
 
   core:
     build: ./core
+    network_mode: host
     privileged: true
-    depends_on:
-      - redis
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     environment:
-      - REDIS_URL=redis://redis:6379
-      - API_URL=http://api:8000
-    networks:
-      - revenix-net
+      - REDIS_URL=redis://localhost:6379
+      - API_URL=http://localhost:8000
 
   dashboard:
     build: ./dashboard
