@@ -1,178 +1,94 @@
-'use client'
+import asyncio
+import json
+import redis.asyncio as aioredis
+from sqlalchemy import text
+from db import SessionLocal
 
-import { useEffect, useState } from 'react'
+async def start_redis_consumer():
+    print("[Consumer] ========================================")
+    print("[Consumer] Starting Redis → Postgres consumer...")
+    print("[Consumer] ========================================")
 
-interface Flow {
-  hostname: string
-  src_ip: string
-  dst_ip: string
-  src_port: number
-  dst_port: number
-  protocol: string
-  packets: number
-  bytes: number
-  end_ts: number
-}
+    while True:
+        try:
+            redis = await aioredis.from_url("redis://redis:6379")
+            print("[Consumer] ✓ Connected to Redis successfully")
 
-export default function Page() {
-  const [flows, setFlows] = useState<Flow[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
+            last_id = "0"
+            batch_size = 100
+            batch = []
 
-  useEffect(() => {
-    const fetchFlows = async () => {
-      try {
-        const possibleUrls = [
-          'http://localhost:8000/flows/recent',
-          'http://127.0.0.1:8000/flows/recent',
-          `http://${window.location.hostname}:8000/flows/recent`
-        ]
+            stream_len = await redis.xlen("flows")
+            print(f"[Consumer] Redis stream has {stream_len} flows waiting")
 
-        let response = null
-        let lastError = null
+            while True:
+                try:
+                    messages = await redis.xread(
+                        {"flows": last_id},
+                        count=100,
+                        block=5000
+                    )
 
-        for (const url of possibleUrls) {
-          try {
-            console.log('[v0] Trying URL:', url)
-            response = await fetch(url, {
-              mode: 'cors',
-              headers: {
-                'Accept': 'application/json',
-              }
-            })
+                    if messages:
+                        for stream_name, stream_messages in messages:
+                            for message_id, data in stream_messages:
+                                flow_json = data.get(b"flow", b"{}")
+                                flow = json.loads(flow_json.decode("utf-8"))
+                                batch.append(flow)
+                                last_id = message_id.decode("utf-8")
 
-            if (response.ok) {
-              console.log('[v0] Success with URL:', url)
-              break
-            }
-          } catch (err) {
-            console.log('[v0] Failed with URL:', url, err)
-            lastError = err
-          }
-        }
+                                if len(batch) >= batch_size:
+                                    success = await process_batch(batch)
+                                    if success:
+                                        await redis.xtrim("flows", maxlen=1000, approximate=True)
+                                    batch = []
 
-        if (!response || !response.ok) {
-          throw lastError || new Error('Failed to fetch from all URLs')
-        }
+                    if batch:
+                        success = await process_batch(batch)
+                        if success:
+                            await redis.xtrim("flows", maxlen=1000, approximate=True)
+                        batch = []
 
-        const data = await response.json()
+                except Exception as e:
+                    print(f"[Consumer] ✗ Error in read loop: {e}")
+                    await asyncio.sleep(2)
 
-        console.log('[v0] Received flows:', data.length, 'flows')
-        console.log('[v0] Sample flow:', data[0])
+        except Exception as e:
+            print(f"[Consumer] ✗ Redis connection failed: {e}")
+            print(f"[Consumer] Retrying in 5 seconds...")
+            await asyncio.sleep(5)
 
-        setFlows(data)
-        setLastUpdate(new Date())
-        setError(null)
-      } catch (err) {
-        console.error('[v0] Fetch error:', err)
-        setError(err instanceof Error ? err.message : 'Network error - cannot reach API')
-      }
-    }
+async def process_batch(batch):
+    """Process multiple flows in a single database transaction"""
+    if not batch:
+        return True
 
-    fetchFlows()
-    const interval = setInterval(fetchFlows, 2000)
-    return () => clearInterval(interval)
-  }, [])
-
-  return (
-    <div className="min-h-screen bg-gray-950 text-white p-8">
-    <div className="max-w-7xl mx-auto">
-    <div className="mb-8">
-    <h1 className="text-4xl font-bold mb-2">Revenix Dashboard</h1>
-    <p className="text-gray-400">Real-time network flow monitoring</p>
-    <p className="text-sm text-gray-500 mt-2">
-    Last updated: {lastUpdate.toLocaleTimeString()}
-    </p>
-    </div>
-
-    {error && (
-      <div className="bg-red-900/20 border border-red-500 rounded-lg p-4 mb-6">
-      <p className="text-red-400">Error: {error}</p>
-      <p className="text-xs text-red-300 mt-2">
-      Check browser console (F12) for details. API should be at http://localhost:8000
-      </p>
-      </div>
-    )}
-
-    <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
-    <div className="overflow-x-auto">
-    <table className="w-full">
-    <thead className="bg-gray-800 border-b border-gray-700">
-    <tr>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Hostname
-    </th>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Source IP
-    </th>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Dest IP
-    </th>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Ports
-    </th>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Protocol
-    </th>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Packets
-    </th>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Bytes
-    </th>
-    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-    Time
-    </th>
-    </tr>
-    </thead>
-    <tbody className="divide-y divide-gray-800">
-    {flows.length === 0 ? (
-      <tr>
-      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
-      No flows captured yet
-      </td>
-      </tr>
-    ) : (
-      flows.map((flow, idx) => (
-        <tr key={idx} className="hover:bg-gray-800/50 transition-colors">
-        <td className="px-4 py-3 text-sm font-medium text-blue-400">
-        {flow.hostname}
-        </td>
-        <td className="px-4 py-3 text-sm font-mono text-gray-300">
-        {flow.src_ip}
-        </td>
-        <td className="px-4 py-3 text-sm font-mono text-gray-300">
-        {flow.dst_ip}
-        </td>
-        <td className="px-4 py-3 text-sm font-mono text-gray-400">
-        {flow.src_port} → {flow.dst_port}
-        </td>
-        <td className="px-4 py-3 text-sm">
-        <span className="px-2 py-1 bg-gray-800 rounded text-xs font-medium">
-        {flow.protocol}
-        </span>
-        </td>
-        <td className="px-4 py-3 text-sm text-gray-300">
-        {flow.packets.toLocaleString()}
-        </td>
-        <td className="px-4 py-3 text-sm text-gray-300">
-        {(flow.bytes / 1024).toFixed(2)} KB
-        </td>
-        <td className="px-4 py-3 text-sm text-gray-500">
-        {new Date(flow.end_ts * 1000).toLocaleTimeString()}
-        </td>
-        </tr>
-      ))
-    )}
-    </tbody>
-    </table>
-    </div>
-    </div>
-
-    <div className="mt-4 text-sm text-gray-500">
-    Showing {flows.length} recent flows
-    </div>
-    </div>
-    </div>
-  )
-}
+    try:
+        async with SessionLocal() as session:
+            for flow in batch:
+                await session.execute(
+                    text("""
+                        INSERT INTO flows (flow_id, hostname, src_ip, dst_ip, src_port, dst_port, protocol, bytes, packets, start_ts, end_ts)
+                        VALUES (:flow_id, :hostname, :src_ip, :dst_ip, :src_port, :dst_port, :protocol, :bytes, :packets, :start_ts, :end_ts)
+                    """),
+                    {
+                        "flow_id": flow.get("flow_id", ""),
+                        "hostname": flow.get("hostname", ""),
+                        "src_ip": flow.get("src_ip", ""),
+                        "dst_ip": flow.get("dst_ip", ""),
+                        "src_port": flow.get("src_port", 0),
+                        "dst_port": flow.get("dst_port", 0),
+                        "protocol": flow.get("protocol", ""),
+                        "bytes": flow.get("bytes", 0),
+                        "packets": flow.get("packets", 0),
+                        "start_ts": flow.get("start_ts", 0),
+                        "end_ts": flow.get("end_ts", 0),
+                    }
+                )
+            await session.commit()
+            print(f"[Consumer] ✓ Inserted {len(batch)} flows into Postgres")
+            return True
+    except Exception as e:
+        print(f"[Consumer] ✗ Batch insert failed: {e}")
+        await asyncio.sleep(1)
+        return False

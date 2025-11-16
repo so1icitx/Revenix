@@ -11,6 +11,7 @@ services:
       - postgres_data:/var/lib/postgresql
       - ./deploy/sql/flows.sql:/docker-entrypoint-initdb.d/01-flows.sql
       - ./deploy/sql/agents.sql:/docker-entrypoint-initdb.d/02-agents.sql
+      - ./deploy/sql/alerts.sql:/docker-entrypoint-initdb.d/03-alerts.sql
     networks:
       - revenix-net
 

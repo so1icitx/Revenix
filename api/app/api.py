@@ -21,6 +21,18 @@ class DeviceRegistration(BaseModel):
     hostname: str
     ip: str | None = None
 
+class AlertCreate(BaseModel):
+    flow_id: str
+    hostname: str
+    src_ip: str
+    dst_ip: str
+    src_port: int | None = None
+    dst_port: int | None = None
+    protocol: str | None = None
+    risk_score: float
+    severity: str | None = None  # Auto-calculated if not provided
+    reason: str
+
 @app.get("/healthz")
 def healthz():
     return {"status": "Revenix API OK"}
@@ -94,4 +106,82 @@ async def get_recent_flows(session: AsyncSession = Depends(get_session)):
         return flows
     except Exception as e:
         print(f"Error fetching flows: {e}")
+        return []
+
+@app.post("/alerts/create")
+async def create_alert(alert: AlertCreate, session: AsyncSession = Depends(get_session)):
+    """Create a new alert if risk_score exceeds threshold"""
+    RISK_THRESHOLD = 0.6  # Only create alerts for risk_score > 0.6
+
+    if alert.risk_score <= RISK_THRESHOLD:
+        return {"status": "skipped", "reason": "risk_score below threshold", "threshold": RISK_THRESHOLD}
+
+    if not alert.severity:
+        if alert.risk_score >= 0.9:
+            severity = "critical"
+        elif alert.risk_score >= 0.8:
+            severity = "high"
+        elif alert.risk_score >= 0.7:
+            severity = "medium"
+        else:
+            severity = "low"
+    else:
+        severity = alert.severity
+
+    await session.execute(
+        text("""
+            INSERT INTO alerts (flow_id, hostname, src_ip, dst_ip, src_port, dst_port, protocol, risk_score, severity, reason)
+            VALUES (:flow_id, :hostname, :src_ip, :dst_ip, :src_port, :dst_port, :protocol, :risk_score, :severity, :reason)
+        """),
+        {
+            "flow_id": alert.flow_id,
+            "hostname": alert.hostname,
+            "src_ip": alert.src_ip,
+            "dst_ip": alert.dst_ip,
+            "src_port": alert.src_port,
+            "dst_port": alert.dst_port,
+            "protocol": alert.protocol or "unknown",
+            "risk_score": alert.risk_score,
+            "severity": severity,
+            "reason": alert.reason,
+        }
+    )
+    await session.commit()
+    return {"status": "created", "severity": severity, "risk_score": alert.risk_score}
+
+@app.get("/alerts/recent")
+async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
+    """Get the most recent alerts"""
+    try:
+        result = await session.execute(
+            text("""
+                SELECT id, flow_id, hostname, src_ip, dst_ip, src_port, dst_port,
+                       protocol, risk_score, severity, reason, timestamp
+                FROM alerts
+                ORDER BY timestamp DESC
+                LIMIT 100
+            """)
+        )
+        rows = result.fetchall()
+
+        alerts = []
+        for row in rows:
+            alerts.append({
+                "id": row[0],
+                "flow_id": row[1],
+                "hostname": row[2],
+                "src_ip": row[3],
+                "dst_ip": row[4],
+                "src_port": row[5],
+                "dst_port": row[6],
+                "protocol": row[7],
+                "risk_score": row[8],
+                "severity": row[9],
+                "reason": row[10],
+                "timestamp": row[11].isoformat() if row[11] else None,
+            })
+
+        return alerts
+    except Exception as e:
+        print(f"Error fetching alerts: {e}")
         return []
