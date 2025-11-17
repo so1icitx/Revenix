@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 
 interface Flow {
   hostname: string
@@ -78,8 +79,19 @@ export default function Page() {
     <div className="min-h-screen bg-gray-950 text-white p-8">
     <div className="max-w-7xl mx-auto">
     <div className="mb-8">
+    <div className="flex items-center justify-between mb-4">
+    <div>
     <h1 className="text-4xl font-bold mb-2">Revenix Dashboard</h1>
     <p className="text-gray-400">Real-time network flow monitoring</p>
+    </div>
+    <Link
+    href="/alerts"
+    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors flex items-center gap-2"
+    >
+    <span>🚨</span>
+    View Alerts
+    </Link>
+    </div>
     <p className="text-sm text-gray-500 mt-2">
     Last updated: {lastUpdate.toLocaleTimeString()}
     </p>

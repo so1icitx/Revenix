@@ -37,6 +37,8 @@ services:
 
   brain:
     build: ./brain
+    ports:
+      - "8001:8001"
     networks:
       - revenix-net
 
