@@ -178,7 +178,7 @@ async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
                 "risk_score": row[8],
                 "severity": row[9],
                 "reason": row[10],
-                "timestamp": row[11].isoformat() if row[11] else None,
+                "created_at": row[11].isoformat() if row[11] else None,
             })
 
         return alerts
