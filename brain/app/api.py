@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List, Dict
 from .features import FlowFeatureExtractor
 from .anomaly_detector import AnomalyDetector
+from .device_profiler import DeviceProfiler  # Import device profiler
 import numpy as np
 import asyncio
 
@@ -11,6 +12,7 @@ app = FastAPI()
 # Initialize components
 feature_extractor = FlowFeatureExtractor()
 anomaly_detector = AnomalyDetector(contamination=0.1)
+device_profiler = DeviceProfiler(save_dir="/app/models/profiles")
 
 class Flow(BaseModel):
     flow_id: str = ""
@@ -38,7 +40,7 @@ class PredictionResponse(BaseModel):
 async def startup_event():
     """Start the auto-learning background task."""
     from .auto_learner import start_auto_learner
-    asyncio.create_task(start_auto_learner(anomaly_detector, feature_extractor))
+    asyncio.create_task(start_auto_learner(anomaly_detector, feature_extractor, device_profiler))
 
 @app.get("/health")
 def health():
@@ -70,7 +72,6 @@ def extract_features_batch(flows: List[Flow]):
         "n_flows": len(flows),
         "n_features": len(feature_extractor.get_feature_names())
     }
-
 
 @app.post("/train")
 def train_model(request: TrainingRequest):
@@ -141,3 +142,19 @@ def model_status():
         "n_features": len(anomaly_detector.feature_names) if anomaly_detector.is_trained else 0,
         "feature_names": anomaly_detector.feature_names if anomaly_detector.is_trained else []
     }
+
+@app.get("/devices/profiles")
+def list_device_profiles():
+    """List all device behavior profiles."""
+    return {
+        "profiles": device_profiler.list_profiles(),
+        "total_devices": len(device_profiler.profiles)
+    }
+
+@app.get("/devices/{hostname}/profile")
+def get_device_profile(hostname: str):
+    """Get training status for specific device."""
+    status = device_profiler.get_profile_status(hostname)
+    if not status['exists']:
+        raise HTTPException(status_code=404, detail=f"No profile found for {hostname}")
+    return status

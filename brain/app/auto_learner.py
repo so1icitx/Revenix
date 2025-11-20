@@ -3,9 +3,11 @@ import aiohttp
 import logging
 import os
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional
+import numpy as np
 from .anomaly_detector import AnomalyDetector
 from .features import FlowFeatureExtractor
+from .device_profiler import DeviceProfiler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +22,7 @@ class AutoLearner:
         self,
         anomaly_detector: AnomalyDetector,
         feature_extractor: FlowFeatureExtractor,
+        device_profiler: DeviceProfiler,  # Added device profiler
         api_url: str = "http://api:8000",
         check_interval: int = 60,
         training_threshold: int = 100,
@@ -36,11 +39,13 @@ class AutoLearner:
 
         self.feature_extractor = feature_extractor
         self.anomaly_detector = anomaly_detector
+        self.device_profiler = device_profiler  # Store device profiler
 
         self.flows_seen = 0
         self.last_flow_id = None
         self.last_retrain_time = 0
         self.baseline_flows = []  # Store flows for retraining
+        self.device_flows = {}  # Track flows per device
 
     async def start(self):
         """Start the auto-learning loop."""
@@ -90,6 +95,10 @@ class AutoLearner:
             if len(self.baseline_flows) > 1000:
                 self.baseline_flows = self.baseline_flows[-1000:]
 
+            self._group_flows_by_device(flows)
+
+            await self._train_device_profiles()
+
             if not self.anomaly_detector.is_trained:
                 self.flows_seen += len(flows)
                 logger.info(f"[AutoLearner] Collected {self.flows_seen}/{self.training_threshold} baseline flows")
@@ -105,6 +114,32 @@ class AutoLearner:
                 if current_time - self.last_retrain_time >= self.retrain_interval:
                     await self.retrain_model()
                     self.last_retrain_time = current_time
+
+    def _group_flows_by_device(self, flows: List[Dict]):
+        """Group flows by hostname for per-device analysis."""
+        for flow in flows:
+            hostname = flow.get('hostname', 'unknown')
+            if hostname not in self.device_flows:
+                self.device_flows[hostname] = []
+            self.device_flows[hostname].append(flow)
+
+            if len(self.device_flows[hostname]) > 200:
+                self.device_flows[hostname] = self.device_flows[hostname][-200:]
+
+    async def _train_device_profiles(self):
+        """Train individual profiles for each device."""
+        for hostname, flows in self.device_flows.items():
+            profile_status = self.device_profiler.get_profile_status(hostname)
+
+            if not profile_status['trained'] and len(flows) >= 30:
+                try:
+                    features = self.feature_extractor.extract_features_batch(flows)
+                    feature_names = self.feature_extractor.get_feature_names()
+
+                    self.device_profiler.train_device(hostname, features, feature_names)
+                    logger.info(f"[AutoLearner] ✓ Trained profile for device: {hostname} ({len(flows)} flows)")
+                except Exception as e:
+                    logger.error(f"[AutoLearner] Failed to train profile for {hostname}: {e}")
 
     async def fetch_flows(self, session: aiohttp.ClientSession) -> List[Dict]:
         """Fetch recent flows from API."""
@@ -147,6 +182,10 @@ class AutoLearner:
                 risk_score = float(risk_scores[i])
                 is_anomaly = predictions[i] == -1
 
+                device_risk_score = await self._check_device_profile(flow, features[i])
+                if device_risk_score is not None:
+                    risk_score = max(risk_score, device_risk_score)
+
                 if risk_score >= self.alert_threshold:
                     await self.create_alert(session, flow, risk_score, is_anomaly)
                     alerts_created += 1
@@ -158,6 +197,22 @@ class AutoLearner:
 
         except Exception as e:
             logger.error(f"[AutoLearner] Analysis failed: {e}")
+
+    async def _check_device_profile(self, flow: Dict, features: np.ndarray) -> Optional[float]:
+        """Check device-specific anomaly score."""
+        hostname = flow.get('hostname', 'unknown')
+        profile_status = self.device_profiler.get_profile_status(hostname)
+
+        if not profile_status['trained']:
+            return None
+
+        try:
+            features_2d = features.reshape(1, -1)
+            _, device_risk_scores = self.device_profiler.predict_device(hostname, features_2d)
+            return float(device_risk_scores[0])
+        except Exception as e:
+            logger.error(f"[AutoLearner] Device profile check failed for {hostname}: {e}")
+            return None
 
     async def create_alert(
         self,
@@ -215,8 +270,13 @@ class AutoLearner:
     def build_threat_reason(self, flow: Dict, risk_score: float, is_anomaly: bool) -> str:
         """Generate human-readable threat explanation."""
         features = self.feature_extractor.extract_features(flow)
+        hostname = flow.get('hostname', 'unknown')
 
         reasons = []
+
+        profile_status = self.device_profiler.get_profile_status(hostname)
+        if profile_status['trained']:
+            reasons.append(f"Abnormal for device {hostname}")
 
         if features.get('packets_per_sec', 0) > 100:
             reasons.append("High packet rate")
@@ -241,12 +301,13 @@ class AutoLearner:
 # Global auto-learner instance
 auto_learner = None
 
-async def start_auto_learner(anomaly_detector, feature_extractor):
+async def start_auto_learner(anomaly_detector, feature_extractor, device_profiler):
     """Start the auto-learning background task."""
     global auto_learner
     auto_learner = AutoLearner(
         anomaly_detector=anomaly_detector,
         feature_extractor=feature_extractor,
+        device_profiler=device_profiler,  # Pass device profiler
         api_url="http://api:8000",
         check_interval=60,
         training_threshold=100,

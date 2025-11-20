@@ -149,7 +149,13 @@ export default function AlertsPage() {
                 </div>
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
-                {new Date(alert.created_at).toLocaleString()}
+                {new Date(alert.created_at).toLocaleString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                })}
                 </td>
                 </tr>
             ))

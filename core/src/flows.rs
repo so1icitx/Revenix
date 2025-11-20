@@ -39,10 +39,11 @@ pub struct FlowAggregator {
     flows: HashMap<FlowKey, Flow>,
     packets_processed: u64,
     last_publish: u64, // Track last publish time
+    redis_password: Option<String>, // Store Redis password for re-authentication
 }
 
 impl FlowAggregator {
-    pub fn new() -> Self {
+    pub fn new(redis_password: Option<String>) -> Self {
         Self {
             flows: HashMap::new(),
             packets_processed: 0,
@@ -50,6 +51,7 @@ impl FlowAggregator {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs(),
+            redis_password, // Store password
         }
     }
 
@@ -175,6 +177,8 @@ impl FlowAggregator {
             return Ok(());
         }
 
+        self.ensure_auth(redis_conn)?;
+
         println!("[Production] Publishing {} active flows to Redis", self.flows.len());
         for flow in self.flows.values() {
             let flow_json = serde_json::to_string(flow)?;
@@ -195,17 +199,24 @@ impl FlowAggregator {
         for (key, flow) in &self.flows {
             if now - flow.end_ts >= FLOW_TIMEOUT {
                 expired_keys.push(key.clone());
-                let flow_json = serde_json::to_string(flow)?;
-                redis::cmd("XADD")
-                .arg("flows")
-                .arg("*")
-                .arg("flow")
-                .arg(&flow_json)
-                .query::<String>(redis_conn)?;
             }
         }
 
         if !expired_keys.is_empty() {
+            self.ensure_auth(redis_conn)?;
+
+            for key in &expired_keys {
+                if let Some(flow) = self.flows.get(key) {
+                    let flow_json = serde_json::to_string(flow)?;
+                    redis::cmd("XADD")
+                    .arg("flows")
+                    .arg("*")
+                    .arg("flow")
+                    .arg(&flow_json)
+                    .query::<String>(redis_conn)?;
+                }
+            }
+
             println!("[Production] Cleaned {} expired flows ({}s timeout)", expired_keys.len(), FLOW_TIMEOUT);
         }
 
@@ -213,6 +224,16 @@ impl FlowAggregator {
             self.flows.remove(&key);
         }
 
+        Ok(())
+    }
+
+    fn ensure_auth(&self, redis_conn: &mut Connection) -> Result<()> {
+        if let Some(ref password) = self.redis_password {
+            redis::cmd("AUTH")
+            .arg(password)
+            .query::<String>(redis_conn)
+            .map_err(|e| anyhow::anyhow!("Redis auth failed: {}", e))?;
+        }
         Ok(())
     }
 }

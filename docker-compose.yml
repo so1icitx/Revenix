@@ -17,15 +17,16 @@ services:
 
   redis:
     image: redis:latest
+    command: redis-server --bind 0.0.0.0 --protected-mode no
     ports:
-      - "6379:6379"
+      - "0.0.0.0:6379:6379"
     networks:
       - revenix-net
 
   api:
     build: ./api
     ports:
-      - "8000:8000"
+      - "0.0.0.0:8000:8000"
     depends_on:
       - postgres
       - redis

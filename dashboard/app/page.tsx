@@ -171,7 +171,15 @@ export default function Page() {
         {(flow.bytes / 1024).toFixed(2)} KB
         </td>
         <td className="px-4 py-3 text-sm text-gray-500">
-        {new Date(flow.end_ts * 1000).toLocaleTimeString()}
+        {new Date(flow.end_ts * 1000).toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true
+        })}
         </td>
         </tr>
       ))

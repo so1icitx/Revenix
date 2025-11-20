@@ -5,12 +5,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import get_session
 from pydantic import BaseModel
 from datetime import datetime
+from contextlib import asynccontextmanager
+import asyncio
 
-app = FastAPI()
+consumer_task = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global consumer_task
+    print("[API] ========================================")
+    print("[API] Starting Redis consumer...")
+    print("[API] ========================================")
+    from redis_consumer import start_redis_consumer
+    consumer_task = asyncio.create_task(start_redis_consumer())
+    yield
+    print("[API] Shutting down consumer...")
+    if consumer_task:
+        consumer_task.cancel()
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

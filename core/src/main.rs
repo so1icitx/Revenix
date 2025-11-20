@@ -43,13 +43,26 @@ async fn main() -> Result<()> {
 
     register_device(&agent_id, &hostname_str).await.ok();
 
+    let redis_password = std::env::var("REDIS_PASSWORD").ok();
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+
     println!("Connecting to Redis at: {}", redis_url);
     let redis_client = redis::Client::open(redis_url.as_str())?;
     let mut redis_conn = redis_client.get_connection()?;
+
+    if let Some(ref password) = redis_password {
+        match redis::cmd("AUTH").arg(password).query::<String>(&mut redis_conn) {
+            Ok(_) => println!("Authenticated with Redis successfully"),
+            Err(e) => {
+                eprintln!("Redis authentication failed: {}", e);
+                return Err(anyhow::anyhow!("Redis auth failed: {}", e));
+            }
+        }
+    }
+
     println!("Connected to Redis successfully");
 
-    let mut aggregator = FlowAggregator::new();
+    let mut aggregator = FlowAggregator::new(redis_password);
 
     let device = Device::list()?
     .into_iter()
