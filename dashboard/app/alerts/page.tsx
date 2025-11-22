@@ -31,6 +31,7 @@ export default function AlertsPage() {
                     setLastUpdate(new Date())
                     setError(null)
             } catch (err) {
+                console.error('Fetch error:', err)
                 setError(err instanceof Error ? err.message : 'Network error')
             }
         }
@@ -59,12 +60,20 @@ export default function AlertsPage() {
         <h1 className="text-4xl font-bold mb-2">Security Alerts</h1>
         <p className="text-gray-400">AI-detected threats and anomalies</p>
         </div>
+        <div className="flex gap-3">
         <Link
         href="/"
         className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
         >
         View Flows
         </Link>
+        <Link
+        href="/rules"
+        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+        >
+        View Rules
+        </Link>
+        </div>
         </div>
         <p className="text-sm text-gray-500">
         Last updated: {lastUpdate.toLocaleTimeString()}

@@ -23,50 +23,19 @@ export default function Page() {
   useEffect(() => {
     const fetchFlows = async () => {
       try {
-        const possibleUrls = [
-          'http://localhost:8000/flows/recent',
-          'http://127.0.0.1:8000/flows/recent',
-          `http://${window.location.hostname}:8000/flows/recent`
-        ]
+        const response = await fetch('http://localhost:8000/flows/recent')
 
-        let response = null
-        let lastError = null
-
-        for (const url of possibleUrls) {
-          try {
-            console.log('[v0] Trying URL:', url)
-            response = await fetch(url, {
-              mode: 'cors',
-              headers: {
-                'Accept': 'application/json',
-              }
-            })
-
-            if (response.ok) {
-              console.log('[v0] Success with URL:', url)
-              break
-            }
-          } catch (err) {
-            console.log('[v0] Failed with URL:', url, err)
-            lastError = err
-          }
-        }
-
-        if (!response || !response.ok) {
-          throw lastError || new Error('Failed to fetch from all URLs')
+        if (!response.ok) {
+          throw new Error('Failed to fetch flows')
         }
 
         const data = await response.json()
-
-        console.log('[v0] Received flows:', data.length, 'flows')
-        console.log('[v0] Sample flow:', data[0])
-
         setFlows(data)
         setLastUpdate(new Date())
         setError(null)
       } catch (err) {
-        console.error('[v0] Fetch error:', err)
-        setError(err instanceof Error ? err.message : 'Network error - cannot reach API')
+        console.error('Fetch error:', err)
+        setError(err instanceof Error ? err.message : 'Network error')
       }
     }
 
@@ -84,13 +53,20 @@ export default function Page() {
     <h1 className="text-4xl font-bold mb-2">Revenix Dashboard</h1>
     <p className="text-gray-400">Real-time network flow monitoring</p>
     </div>
+    <div className="flex gap-3">
     <Link
     href="/alerts"
-    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors flex items-center gap-2"
+    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
     >
-    <span>🚨</span>
     View Alerts
     </Link>
+    <Link
+    href="/rules"
+    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+    >
+    View Rules
+    </Link>
+    </div>
     </div>
     <p className="text-sm text-gray-500 mt-2">
     Last updated: {lastUpdate.toLocaleTimeString()}
@@ -100,9 +76,6 @@ export default function Page() {
     {error && (
       <div className="bg-red-900/20 border border-red-500 rounded-lg p-4 mb-6">
       <p className="text-red-400">Error: {error}</p>
-      <p className="text-xs text-red-300 mt-2">
-      Check browser console (F12) for details. API should be at http://localhost:8000
-      </p>
       </div>
     )}
 

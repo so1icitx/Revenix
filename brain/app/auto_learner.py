@@ -8,6 +8,7 @@ import numpy as np
 from .anomaly_detector import AnomalyDetector
 from .features import FlowFeatureExtractor
 from .device_profiler import DeviceProfiler
+from .rule_recommender import RuleRecommender  # Added rule recommender
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,12 +23,12 @@ class AutoLearner:
         self,
         anomaly_detector: AnomalyDetector,
         feature_extractor: FlowFeatureExtractor,
-        device_profiler: DeviceProfiler,  # Added device profiler
+        device_profiler: DeviceProfiler,
         api_url: str = "http://api:8000",
         check_interval: int = 60,
         training_threshold: int = 100,
-        alert_threshold: float = 0.6,
-        retrain_interval: int = 3600,  # Retrain every hour
+        alert_threshold: float = 0.75,  # Raised from 0.6 to 0.75 to reduce false positives
+        retrain_interval: int = 3600,
         model_save_path: str = "/app/models/anomaly_model.pkl"
     ):
         self.api_url = api_url
@@ -39,13 +40,14 @@ class AutoLearner:
 
         self.feature_extractor = feature_extractor
         self.anomaly_detector = anomaly_detector
-        self.device_profiler = device_profiler  # Store device profiler
+        self.device_profiler = device_profiler
+        self.rule_recommender = RuleRecommender()  # Initialize rule recommender
 
         self.flows_seen = 0
         self.last_flow_id = None
         self.last_retrain_time = 0
-        self.baseline_flows = []  # Store flows for retraining
-        self.device_flows = {}  # Track flows per device
+        self.baseline_flows = []
+        self.device_flows = {}
 
     async def start(self):
         """Start the auto-learning loop."""
@@ -112,7 +114,10 @@ class AutoLearner:
 
                 current_time = time.time()
                 if current_time - self.last_retrain_time >= self.retrain_interval:
-                    await self.retrain_model()
+                    logger.info("[AutoLearner] Retraining model with recent flows...")
+                    await self.train_baseline(self.baseline_flows[-1000:])
+                    self.save_model()
+                    logger.info("[AutoLearner] ✓ Model retrained! Adapted to network changes")
                     self.last_retrain_time = current_time
 
     def _group_flows_by_device(self, flows: List[Dict]):
@@ -221,7 +226,7 @@ class AutoLearner:
         risk_score: float,
         is_anomaly: bool
     ):
-        """Send alert to API."""
+        """Send alert to API and recommend firewall rules."""
         try:
             reason = self.build_threat_reason(flow, risk_score, is_anomaly)
 
@@ -241,31 +246,54 @@ class AutoLearner:
             ) as resp:
                 if resp.status in [200, 201]:
                     logger.info(f"[AutoLearner] Alert created: {reason} (risk: {risk_score:.2f})")
+
+                    alert_data = await resp.json()
+                    alert_id = alert_data.get("alert_id")
+
+                    if alert_id:
+                        await self.recommend_rules_for_alert(
+                            session, alert_id, flow, risk_score, reason
+                        )
                 else:
                     logger.error(f"[AutoLearner] Failed to create alert: {resp.status}")
         except Exception as e:
             logger.error(f"[AutoLearner] Error creating alert: {e}")
 
-    async def retrain_model(self):
-        """Retrain model on recent flows to adapt to network changes."""
-        if len(self.baseline_flows) < 50:
-            logger.info("[AutoLearner] Not enough flows for retraining, skipping...")
-            return
-
-        logger.info(f"[AutoLearner] 🔄 Retraining model on {len(self.baseline_flows)} recent flows...")
-
+    async def recommend_rules_for_alert(
+        self,
+        session: aiohttp.ClientSession,
+        alert_id: int,
+        flow: Dict,
+        risk_score: float,
+        reason: str
+    ):
+        """Generate and submit rule recommendations for an alert."""
         try:
-            features = self.feature_extractor.extract_features_batch(self.baseline_flows)
-            feature_names = self.feature_extractor.get_feature_names()
+            rules = self.rule_recommender.recommend_rules(flow, risk_score, reason)
 
-            result = self.anomaly_detector.train(features, feature_names)
+            if not rules:
+                return
 
-            logger.info(f"[AutoLearner] ✓ Model retrained! Adapted to network changes.")
-            logger.info(f"[AutoLearner] New baseline: {result['n_samples']} flows")
+            for rule in rules:
+                rule_data = {
+                    "alert_id": alert_id,
+                    **rule
+                }
 
-            self.save_model()
+                async with session.post(
+                    f"{self.api_url}/rules/create",
+                    json=rule_data
+                ) as resp:
+                    if resp.status in [200, 201]:
+                        logger.info(
+                            f"[RuleEngine] Recommended: {rule['action']} {rule['target']} "
+                            f"(confidence: {rule['confidence']:.2f})"
+                        )
+                    else:
+                        logger.error(f"[RuleEngine] Failed to create rule: {resp.status}")
+
         except Exception as e:
-            logger.error(f"[AutoLearner] Retraining failed: {e}")
+            logger.error(f"[RuleEngine] Error recommending rules: {e}")
 
     def build_threat_reason(self, flow: Dict, risk_score: float, is_anomaly: bool) -> str:
         """Generate human-readable threat explanation."""
@@ -307,11 +335,11 @@ async def start_auto_learner(anomaly_detector, feature_extractor, device_profile
     auto_learner = AutoLearner(
         anomaly_detector=anomaly_detector,
         feature_extractor=feature_extractor,
-        device_profiler=device_profiler,  # Pass device profiler
+        device_profiler=device_profiler,
         api_url="http://api:8000",
         check_interval=60,
         training_threshold=100,
-        alert_threshold=0.6,
+        alert_threshold=0.75,  # Raised from 0.6 to 0.75 to reduce false positives
         retrain_interval=3600,
         model_save_path="/app/models/anomaly_model.pkl"
     )
