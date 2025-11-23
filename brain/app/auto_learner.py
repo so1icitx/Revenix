@@ -8,7 +8,8 @@ import numpy as np
 from .anomaly_detector import AnomalyDetector
 from .features import FlowFeatureExtractor
 from .device_profiler import DeviceProfiler
-from .rule_recommender import RuleRecommender  # Added rule recommender
+from .rule_recommender import RuleRecommender
+from .threat_explainer import ThreatExplainer  # Added threat explainer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,7 +42,8 @@ class AutoLearner:
         self.feature_extractor = feature_extractor
         self.anomaly_detector = anomaly_detector
         self.device_profiler = device_profiler
-        self.rule_recommender = RuleRecommender()  # Initialize rule recommender
+        self.rule_recommender = RuleRecommender()
+        self.threat_explainer = ThreatExplainer()  # Initialize threat explainer
 
         self.flows_seen = 0
         self.last_flow_id = None
@@ -228,7 +230,29 @@ class AutoLearner:
     ):
         """Send alert to API and recommend firewall rules."""
         try:
-            reason = self.build_threat_reason(flow, risk_score, is_anomaly)
+            features_dict = self.feature_extractor.extract_features(flow)
+            hostname = flow.get('hostname', 'unknown')
+            profile_status = self.device_profiler.get_profile_status(hostname)
+
+            # Generate verbose, detailed explanation
+            detailed_reason = self.threat_explainer.explain_threat(
+                flow=flow,
+                risk_score=risk_score,
+                features=features_dict,
+                device_profile_trained=profile_status.get('trained', False),
+                baseline_comparison=None  # Could add historical comparison
+            )
+
+            # Also get mitigation recommendations
+            threat_type = self._classify_threat_type(features_dict)
+            mitigations = self.threat_explainer.get_mitigation_recommendations(
+                flow, risk_score, threat_type
+            )
+
+            # Combine explanation with top mitigation recommendation
+            full_reason = detailed_reason
+            if mitigations:
+                full_reason += f" Recommended action: {mitigations[0]}"
 
             alert = {
                 "flow_id": flow.get("flow_id", ""),
@@ -237,7 +261,7 @@ class AutoLearner:
                 "dst_ip": flow.get("dst_ip", ""),
                 "protocol": flow.get("protocol", "TCP"),
                 "risk_score": risk_score,
-                "reason": reason
+                "reason": full_reason  # Using detailed explanation instead of simple reason
             }
 
             async with session.post(
@@ -245,14 +269,16 @@ class AutoLearner:
                 json=alert
             ) as resp:
                 if resp.status in [200, 201]:
-                    logger.info(f"[AutoLearner] Alert created: {reason} (risk: {risk_score:.2f})")
+                    # Log brief summary, full explanation goes to DB
+                    brief_summary = detailed_reason.split('.')[0]  # First sentence
+                    logger.info(f"[AutoLearner] Alert created: {brief_summary}... (risk: {risk_score:.2f})")
 
                     alert_data = await resp.json()
                     alert_id = alert_data.get("alert_id")
 
                     if alert_id:
                         await self.recommend_rules_for_alert(
-                            session, alert_id, flow, risk_score, reason
+                            session, alert_id, flow, risk_score, detailed_reason
                         )
                 else:
                     logger.error(f"[AutoLearner] Failed to create alert: {resp.status}")
@@ -295,36 +321,18 @@ class AutoLearner:
         except Exception as e:
             logger.error(f"[RuleEngine] Error recommending rules: {e}")
 
-    def build_threat_reason(self, flow: Dict, risk_score: float, is_anomaly: bool) -> str:
-        """Generate human-readable threat explanation."""
-        features = self.feature_extractor.extract_features(flow)
-        hostname = flow.get('hostname', 'unknown')
-
-        reasons = []
-
-        profile_status = self.device_profiler.get_profile_status(hostname)
-        if profile_status['trained']:
-            reasons.append(f"Abnormal for device {hostname}")
-
-        if features.get('packets_per_sec', 0) > 100:
-            reasons.append("High packet rate")
-
-        if features.get('bytes_per_packet', 0) > 5000:
-            reasons.append("Large packet size")
-
+    def _classify_threat_type(self, features: Dict[str, float]) -> str:
+        """Classify the type of threat based on features."""
         if features.get('port_range', 0) > 10:
-            reasons.append("Multiple ports (port scan?)")
-
-        if features.get('src_port_entropy', 0) > 2.0:
-            reasons.append("Random source ports")
-
-        if not reasons:
-            if is_anomaly:
-                reasons.append("Unusual traffic pattern")
-            else:
-                reasons.append("Suspicious behavior detected")
-
-        return ", ".join(reasons)
+            return "port_scan"
+        elif features.get('packets_per_sec', 0) > 200:
+            return "ddos"
+        elif features.get('bytes_per_packet', 0) > 5000:
+            return "data_exfiltration"
+        elif features.get('src_port_entropy', 0) > 2.0:
+            return "botnet"
+        else:
+            return "anomalous_behavior"
 
 # Global auto-learner instance
 auto_learner = None

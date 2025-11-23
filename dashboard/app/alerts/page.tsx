@@ -20,6 +20,7 @@ export default function AlertsPage() {
     const [alerts, setAlerts] = useState<Alert[]>([])
     const [error, setError] = useState<string | null>(null)
     const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
+    const [expandedAlert, setExpandedAlert] = useState<number | null>(null)  // Track expanded alert for full explanation
 
     useEffect(() => {
         const fetchAlerts = async () => {
@@ -58,7 +59,7 @@ export default function AlertsPage() {
         <div className="flex items-center justify-between mb-4">
         <div>
         <h1 className="text-4xl font-bold mb-2">Security Alerts</h1>
-        <p className="text-gray-400">AI-detected threats and anomalies</p>
+        <p className="text-gray-400">AI-detected threats with detailed explanations</p>
         </div>
         <div className="flex gap-3">
         <Link
@@ -106,8 +107,8 @@ export default function AlertsPage() {
         <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
         Dest IP
         </th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-        AI Reason
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider w-1/3">
+        AI Threat Analysis
         </th>
         <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
         Time
@@ -123,7 +124,12 @@ export default function AlertsPage() {
             </tr>
         ) : (
             alerts.map((alert) => (
-                <tr key={alert.id} className="hover:bg-gray-800/50 transition-colors">
+                <>
+                <tr
+                key={alert.id}
+                className="hover:bg-gray-800/50 transition-colors cursor-pointer"
+                onClick={() => setExpandedAlert(expandedAlert === alert.id ? null : alert.id)}
+                >
                 <td className="px-4 py-3 text-sm">
                 <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${getSeverityColor(alert.severity)}`}>
                 {alert.severity}
@@ -151,10 +157,23 @@ export default function AlertsPage() {
                 <td className="px-4 py-3 text-sm font-mono text-gray-300">
                 {alert.dst_ip}
                 </td>
-                <td className="px-4 py-3 text-sm text-gray-300 max-w-md">
+                <td className="px-4 py-3 text-sm text-gray-300">
                 <div className="flex items-start gap-2">
-                <span className="text-yellow-500 mt-0.5">⚠</span>
-                <span>{alert.reason}</span>
+                <span className="text-yellow-500 mt-0.5 flex-shrink-0">⚠</span>
+                <div className="flex-1">
+                <p className={expandedAlert === alert.id ? "" : "line-clamp-2"}>
+                {alert.reason}
+                </p>
+                <button
+                className="text-blue-400 hover:text-blue-300 text-xs mt-1"
+                onClick={(e) => {
+                    e.stopPropagation()
+                    setExpandedAlert(expandedAlert === alert.id ? null : alert.id)
+                }}
+                >
+                {expandedAlert === alert.id ? 'Show less' : 'Read full analysis →'}
+                </button>
+                </div>
                 </div>
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
@@ -167,6 +186,31 @@ export default function AlertsPage() {
                 })}
                 </td>
                 </tr>
+                {expandedAlert === alert.id && (
+                    <tr key={`${alert.id}-expanded`} className="bg-gray-800/30">
+                    <td colSpan={7} className="px-4 py-4">
+                    <div className="space-y-3">
+                    <div>
+                    <h4 className="text-sm font-semibold text-gray-300 mb-2">Complete Threat Analysis:</h4>
+                    <p className="text-sm text-gray-400 leading-relaxed">
+                    {alert.reason}
+                    </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 pt-3 border-t border-gray-700">
+                    <div>
+                    <p className="text-xs text-gray-500">Protocol</p>
+                    <p className="text-sm text-gray-300 font-medium">{alert.protocol || 'TCP'}</p>
+                    </div>
+                    <div>
+                    <p className="text-xs text-gray-500">Flow ID</p>
+                    <p className="text-sm text-gray-300 font-mono">{alert.flow_id.substring(0, 8)}...</p>
+                    </div>
+                    </div>
+                    </div>
+                    </td>
+                    </tr>
+                )}
+                </>
             ))
         )}
         </tbody>
