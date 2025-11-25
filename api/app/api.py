@@ -49,6 +49,7 @@ class AlertCreate(BaseModel):
     risk_score: float
     severity: str | None = None  # Auto-calculated if not provided
     reason: str
+    threat_category: str | None = None  # Added threat category field
 
 class RuleCreate(BaseModel):
     alert_id: int
@@ -137,18 +138,16 @@ async def get_recent_flows(session: AsyncSession = Depends(get_session)):
 async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
     """Get the most recent alerts"""
     try:
-        print("[v0] Fetching alerts from database...")
         result = await session.execute(
             text("""
                 SELECT id, flow_id, hostname, src_ip, dst_ip, src_port, dst_port,
-                       protocol, risk_score, severity, reason, timestamp
+                       protocol, risk_score, severity, reason, threat_category, timestamp
                 FROM alerts
                 ORDER BY timestamp DESC
                 LIMIT 100
             """)
         )
         rows = result.fetchall()
-        print(f"[v0] Found {len(rows)} alerts")
 
         alerts = []
         for row in rows:
@@ -164,10 +163,10 @@ async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
                 "risk_score": row[8],
                 "severity": row[9],
                 "reason": row[10],
-                "created_at": row[11].isoformat() if row[11] else None,
+                "threat_category": row[11],  # Include threat category
+                "created_at": row[12].isoformat() if row[12] else None,
             })
 
-        print(f"[v0] Returning {len(alerts)} alerts")
         return alerts
     except Exception as e:
         print(f"[v0] Error fetching alerts: {e}")
@@ -178,7 +177,7 @@ async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
 @app.post("/alerts/create")
 async def create_alert(alert: AlertCreate, session: AsyncSession = Depends(get_session)):
     """Create a new alert if risk_score exceeds threshold"""
-    RISK_THRESHOLD = 0.75  # Raised from 0.6 to 0.75 to match Brain threshold and reduce false positives
+    RISK_THRESHOLD = 0.75
 
     if alert.risk_score <= RISK_THRESHOLD:
         return {"status": "skipped", "reason": "risk_score below threshold", "threshold": RISK_THRESHOLD}
@@ -195,12 +194,13 @@ async def create_alert(alert: AlertCreate, session: AsyncSession = Depends(get_s
     else:
         severity = alert.severity
 
-    print(f"[API] Creating alert: {alert.hostname} - {alert.reason} (risk: {alert.risk_score:.2f})")
+    category_log = f"[{alert.threat_category}] " if alert.threat_category else ""
+    print(f"[API] {category_log}Creating alert: {alert.hostname} - {alert.reason[:100]}... (risk: {alert.risk_score:.2f})")
 
     result = await session.execute(
         text("""
-            INSERT INTO alerts (flow_id, hostname, src_ip, dst_ip, src_port, dst_port, protocol, risk_score, severity, reason)
-            VALUES (:flow_id, :hostname, :src_ip, :dst_ip, :src_port, :dst_port, :protocol, :risk_score, :severity, :reason)
+            INSERT INTO alerts (flow_id, hostname, src_ip, dst_ip, src_port, dst_port, protocol, risk_score, severity, reason, threat_category)
+            VALUES (:flow_id, :hostname, :src_ip, :dst_ip, :src_port, :dst_port, :protocol, :risk_score, :severity, :reason, :threat_category)
             RETURNING id
         """),
         {
@@ -214,12 +214,12 @@ async def create_alert(alert: AlertCreate, session: AsyncSession = Depends(get_s
             "risk_score": alert.risk_score,
             "severity": severity,
             "reason": alert.reason,
+            "threat_category": alert.threat_category,  # Store threat category
         }
     )
     await session.commit()
 
     alert_id = result.fetchone()[0]
-    print(f"[API] Alert created with ID: {alert_id}")
 
     return {"status": "created", "alert_id": alert_id, "severity": severity, "risk_score": alert.risk_score}
 
@@ -282,3 +282,8 @@ async def get_recent_rules(session: AsyncSession = Depends(get_session)):
     except Exception as e:
         print(f"Error fetching rules: {e}")
         return []
+
+@app.get("/rules/recommended")
+async def get_recommended_rules(session: AsyncSession = Depends(get_session)):
+    """Alias for /rules/recent - get recommended firewall rules"""
+    return await get_recent_rules(session)

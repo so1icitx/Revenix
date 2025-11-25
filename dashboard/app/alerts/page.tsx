@@ -13,6 +13,7 @@ interface Alert {
     src_ip: string
     dst_ip: string
     protocol?: string
+    threat_category?: string  // Added threat category field
     created_at: string
 }
 
@@ -50,6 +51,29 @@ export default function AlertsPage() {
             case 'low': return 'bg-blue-500 text-white'
             default: return 'bg-gray-500 text-white'
         }
+    }
+
+    const getThreatCategoryBadge = (category?: string) => {
+        if (!category) return null
+
+            const categoryColors: Record<string, string> = {
+                'port_scan': 'bg-purple-600',
+                'ddos_attack': 'bg-red-600',
+                'botnet_c2': 'bg-orange-600',
+                'data_exfiltration': 'bg-red-700',
+                'brute_force': 'bg-yellow-600',
+                'dns_tunneling': 'bg-blue-600',
+                'anomalous_behavior': 'bg-gray-600'
+            }
+
+            const color = categoryColors[category] || 'bg-gray-600'
+            const label = category.replace(/_/g, ' ').toUpperCase()
+
+            return (
+                <span className={`${color} text-white px-2 py-1 rounded text-xs font-bold`}>
+                {label}
+                </span>
+            )
     }
 
     return (
@@ -93,6 +117,9 @@ export default function AlertsPage() {
         <thead className="bg-gray-800 border-b border-gray-700">
         <tr>
         <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+        Threat Type  {/* Added threat type column */}
+        </th>
+        <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
         Severity
         </th>
         <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
@@ -118,7 +145,7 @@ export default function AlertsPage() {
         <tbody className="divide-y divide-gray-800">
         {alerts.length === 0 ? (
             <tr>
-            <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
+            <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
             No alerts detected yet
             </td>
             </tr>
@@ -130,6 +157,9 @@ export default function AlertsPage() {
                 className="hover:bg-gray-800/50 transition-colors cursor-pointer"
                 onClick={() => setExpandedAlert(expandedAlert === alert.id ? null : alert.id)}
                 >
+                <td className="px-4 py-3 text-sm">
+                {getThreatCategoryBadge(alert.threat_category)}
+                </td>
                 <td className="px-4 py-3 text-sm">
                 <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${getSeverityColor(alert.severity)}`}>
                 {alert.severity}
@@ -188,8 +218,14 @@ export default function AlertsPage() {
                 </tr>
                 {expandedAlert === alert.id && (
                     <tr key={`${alert.id}-expanded`} className="bg-gray-800/30">
-                    <td colSpan={7} className="px-4 py-4">
+                    <td colSpan={8} className="px-4 py-4">
                     <div className="space-y-3">
+                    {alert.threat_category && (
+                        <div className="flex items-center gap-2 pb-2 border-b border-gray-700">
+                        <span className="text-xs text-gray-500">Threat Classification:</span>
+                        {getThreatCategoryBadge(alert.threat_category)}
+                        </div>
+                    )}
                     <div>
                     <h4 className="text-sm font-semibold text-gray-300 mb-2">Complete Threat Analysis:</h4>
                     <p className="text-sm text-gray-400 leading-relaxed">

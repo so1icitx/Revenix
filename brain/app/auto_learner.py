@@ -10,6 +10,7 @@ from .features import FlowFeatureExtractor
 from .device_profiler import DeviceProfiler
 from .rule_recommender import RuleRecommender
 from .threat_explainer import ThreatExplainer  # Added threat explainer
+from .threat_classifier import ThreatClassifier  # Added threat classifier import
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class AutoLearner:
         api_url: str = "http://api:8000",
         check_interval: int = 60,
         training_threshold: int = 100,
-        alert_threshold: float = 0.75,  # Raised from 0.6 to 0.75 to reduce false positives
+        alert_threshold: float = 0.75,
         retrain_interval: int = 3600,
         model_save_path: str = "/app/models/anomaly_model.pkl"
     ):
@@ -43,7 +44,8 @@ class AutoLearner:
         self.anomaly_detector = anomaly_detector
         self.device_profiler = device_profiler
         self.rule_recommender = RuleRecommender()
-        self.threat_explainer = ThreatExplainer()  # Initialize threat explainer
+        self.threat_explainer = ThreatExplainer()
+        self.threat_classifier = ThreatClassifier()  # Initialize threat classifier
 
         self.flows_seen = 0
         self.last_flow_id = None
@@ -185,6 +187,8 @@ class AutoLearner:
             predictions, risk_scores = self.anomaly_detector.predict(features)
 
             alerts_created = 0
+            whitelisted_count = 0  # Track whitelisted traffic
+
             for i, flow in enumerate(flows):
                 risk_score = float(risk_scores[i])
                 is_anomaly = predictions[i] == -1
@@ -193,14 +197,31 @@ class AutoLearner:
                 if device_risk_score is not None:
                     risk_score = max(risk_score, device_risk_score)
 
-                if risk_score >= self.alert_threshold:
-                    await self.create_alert(session, flow, risk_score, is_anomaly)
+                features_dict = self.feature_extractor.extract_features(flow)
+                threat_category, threat_confidence, classification_reason = self.threat_classifier.classify_threat(
+                    flow, features_dict, risk_score
+                )
+
+                # Only create alerts for actual threats, not whitelisted traffic
+                if threat_category is None:
+                    whitelisted_count += 1
+                    continue
+
+                # Use classifier confidence if higher than ML score
+                final_risk_score = max(risk_score, threat_confidence)
+
+                if final_risk_score >= self.alert_threshold:
+                    await self.create_alert(
+                        session, flow, final_risk_score, is_anomaly,
+                        threat_category=threat_category,
+                        threat_reason=classification_reason
+                    )
                     alerts_created += 1
 
             if alerts_created > 0:
-                logger.info(f"[AutoLearner] 🚨 Created {alerts_created} alerts for suspicious flows")
+                logger.info(f"[AutoLearner] 🚨 Created {alerts_created} alerts ({whitelisted_count} flows whitelisted)")
             else:
-                logger.info(f"[AutoLearner] ✓ Analyzed {len(flows)} flows - all normal")
+                logger.info(f"[AutoLearner] ✓ Analyzed {len(flows)} flows - {whitelisted_count} whitelisted, {len(flows) - whitelisted_count} normal")
 
         except Exception as e:
             logger.error(f"[AutoLearner] Analysis failed: {e}")
@@ -226,7 +247,9 @@ class AutoLearner:
         session: aiohttp.ClientSession,
         flow: Dict,
         risk_score: float,
-        is_anomaly: bool
+        is_anomaly: bool,
+        threat_category: Optional[str] = None,  # Added threat category parameter
+        threat_reason: Optional[str] = None     # Added classification reason
     ):
         """Send alert to API and recommend firewall rules."""
         try:
@@ -234,22 +257,27 @@ class AutoLearner:
             hostname = flow.get('hostname', 'unknown')
             profile_status = self.device_profiler.get_profile_status(hostname)
 
-            # Generate verbose, detailed explanation
-            detailed_reason = self.threat_explainer.explain_threat(
-                flow=flow,
-                risk_score=risk_score,
-                features=features_dict,
-                device_profile_trained=profile_status.get('trained', False),
-                baseline_comparison=None  # Could add historical comparison
-            )
+            if threat_reason:
+                detailed_reason = threat_reason
+            else:
+                detailed_reason = self.threat_explainer.explain_threat(
+                    flow=flow,
+                    risk_score=risk_score,
+                    features=features_dict,
+                    device_profile_trained=profile_status.get('trained', False),
+                    baseline_comparison=None
+                )
 
-            # Also get mitigation recommendations
-            threat_type = self._classify_threat_type(features_dict)
+            # Get severity from classifier if category exists
+            if threat_category:
+                severity = self.threat_classifier.get_threat_severity(threat_category, risk_score)
+            else:
+                severity = self._get_severity_from_score(risk_score)
+
             mitigations = self.threat_explainer.get_mitigation_recommendations(
-                flow, risk_score, threat_type
+                flow, risk_score, threat_category or "anomalous_behavior"
             )
 
-            # Combine explanation with top mitigation recommendation
             full_reason = detailed_reason
             if mitigations:
                 full_reason += f" Recommended action: {mitigations[0]}"
@@ -261,7 +289,9 @@ class AutoLearner:
                 "dst_ip": flow.get("dst_ip", ""),
                 "protocol": flow.get("protocol", "TCP"),
                 "risk_score": risk_score,
-                "reason": full_reason  # Using detailed explanation instead of simple reason
+                "severity": severity,
+                "reason": full_reason,
+                "threat_category": threat_category  # Include threat category
             }
 
             async with session.post(
@@ -269,9 +299,9 @@ class AutoLearner:
                 json=alert
             ) as resp:
                 if resp.status in [200, 201]:
-                    # Log brief summary, full explanation goes to DB
-                    brief_summary = detailed_reason.split('.')[0]  # First sentence
-                    logger.info(f"[AutoLearner] Alert created: {brief_summary}... (risk: {risk_score:.2f})")
+                    category_str = f"[{threat_category.upper()}]" if threat_category else ""
+                    brief_summary = detailed_reason.split('.')[0]
+                    logger.info(f"[AutoLearner] {category_str} Alert: {brief_summary}... (risk: {risk_score:.2f})")
 
                     alert_data = await resp.json()
                     alert_id = alert_data.get("alert_id")
@@ -321,18 +351,16 @@ class AutoLearner:
         except Exception as e:
             logger.error(f"[RuleEngine] Error recommending rules: {e}")
 
-    def _classify_threat_type(self, features: Dict[str, float]) -> str:
-        """Classify the type of threat based on features."""
-        if features.get('port_range', 0) > 10:
-            return "port_scan"
-        elif features.get('packets_per_sec', 0) > 200:
-            return "ddos"
-        elif features.get('bytes_per_packet', 0) > 5000:
-            return "data_exfiltration"
-        elif features.get('src_port_entropy', 0) > 2.0:
-            return "botnet"
+    def _get_severity_from_score(self, risk_score: float) -> str:
+        """Fallback severity calculation from risk score."""
+        if risk_score >= 0.9:
+            return "critical"
+        elif risk_score >= 0.8:
+            return "high"
+        elif risk_score >= 0.7:
+            return "medium"
         else:
-            return "anomalous_behavior"
+            return "low"
 
 # Global auto-learner instance
 auto_learner = None
@@ -347,7 +375,7 @@ async def start_auto_learner(anomaly_detector, feature_extractor, device_profile
         api_url="http://api:8000",
         check_interval=60,
         training_threshold=100,
-        alert_threshold=0.75,  # Raised from 0.6 to 0.75 to reduce false positives
+        alert_threshold=0.75,
         retrain_interval=3600,
         model_save_path="/app/models/anomaly_model.pkl"
     )

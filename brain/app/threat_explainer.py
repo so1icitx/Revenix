@@ -46,7 +46,7 @@ class ThreatExplainer:
         baseline_comparison: Optional[Dict[str, float]] = None
     ) -> str:
         """
-        Generatea a detailed, verbose explanation for why this flow is considered threatening.
+        Generate a detailed, verbose explanation for why this flow is considered threatening.
 
         Args:
             flow: The network flow data
