@@ -11,7 +11,8 @@
   "dependencies": {
     "react": "^19",
     "react-dom": "^19",
-    "next": "^16"
+    "next": "^16",
+    "lucide-react": "^0.454.0"
   },
   "devDependencies": {
     "typescript": "^5",
@@ -19,6 +20,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "postcss": "^8",
-    "tailwindcss": "^4"
+    "tailwindcss": "^4",
+    "@tailwindcss/postcss": "^4"
   }
 }
