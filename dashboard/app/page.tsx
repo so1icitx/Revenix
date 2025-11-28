@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { DashboardCard } from '../components/dashboard-card'
 import { Activity, Shield, Laptop, Heart } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 
 interface Stats {
   totalTraffic: number
@@ -19,6 +20,7 @@ interface Stats {
 }
 
 export default function Page() {
+  const router = useRouter()
   const [stats, setStats] = useState<Stats>({
     totalTraffic: 0,
     blockedThreats: 0,
@@ -97,6 +99,7 @@ export default function Page() {
     sparkline={stats.trafficSparkline}
     />
 
+    <div onClick={() => router.push('/threats')} className="cursor-pointer">
     <DashboardCard
     title="Blocked Threats (AI)"
     value={stats.blockedThreats}
@@ -123,6 +126,7 @@ export default function Page() {
     </div>
     </div>
     </DashboardCard>
+    </div>
 
     <DashboardCard
     title="Active Endpoints"
