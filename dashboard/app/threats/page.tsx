@@ -46,6 +46,23 @@ export default function ThreatsPage() {
         }
     }
 
+    const formatDate = (timestamp: string) => {
+        try {
+            const date = new Date(timestamp)
+            if (isNaN(date.getTime())) {
+                return 'Unknown'
+            }
+            return date.toLocaleString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            })
+        } catch (error) {
+            return 'Unknown'
+        }
+    }
+
     return (
         <div className="p-8 animate-fadeIn">
         <div className="mb-8">
@@ -133,12 +150,7 @@ export default function ThreatsPage() {
             </div>
             </td>
             <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
-            {new Date(alert.timestamp).toLocaleString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            })}
+            {formatDate(alert.timestamp)}
             </td>
             </tr>
             {expandedAlert === alert.id && (

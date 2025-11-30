@@ -1,18 +1,29 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict
 from .features import FlowFeatureExtractor
 from .anomaly_detector import AnomalyDetector
 from .device_profiler import DeviceProfiler  # Import device profiler
+from .baseline_tracker import BaselineTracker  # Import baseline tracker
 import numpy as np
 import asyncio
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins in development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Initialize components
 feature_extractor = FlowFeatureExtractor()
 anomaly_detector = AnomalyDetector(contamination=0.1)
 device_profiler = DeviceProfiler(save_dir="/app/models/profiles")
+baseline_tracker = BaselineTracker(save_dir="/app/models/baselines")  # Initialize baseline tracker
 
 class Flow(BaseModel):
     flow_id: str = ""
@@ -146,8 +157,22 @@ def model_status():
 @app.get("/devices/profiles")
 def list_device_profiles():
     """List all device behavior profiles."""
+    profiles = device_profiler.list_profiles()
+
+    # Enrich with baseline data
+    for profile in profiles:
+        hostname = profile['hostname']
+        baseline_info = baseline_tracker.get_baseline_info(hostname)
+        if baseline_info:
+            profile['baseline'] = {
+                'avg_bytes_per_flow': baseline_info.get('avg_bytes_per_flow', 0),
+                'avg_packets_per_flow': baseline_info.get('avg_packets_per_flow', 0),
+                'common_destinations_count': len(baseline_info.get('common_destinations', {})),
+                'common_ports_count': len(baseline_info.get('common_ports', {}))
+            }
+
     return {
-        "profiles": device_profiler.list_profiles(),
+        "profiles": profiles,
         "total_devices": len(device_profiler.profiles)
     }
 
@@ -157,4 +182,17 @@ def get_device_profile(hostname: str):
     status = device_profiler.get_profile_status(hostname)
     if not status['exists']:
         raise HTTPException(status_code=404, detail=f"No profile found for {hostname}")
+
+    baseline_info = baseline_tracker.get_baseline_info(hostname)
+    if baseline_info:
+        status['baseline'] = baseline_info
+
     return status
+
+@app.get("/devices/{hostname}/baseline")
+def get_device_baseline(hostname: str):
+    """Get behavioral baseline for specific device."""
+    baseline_info = baseline_tracker.get_baseline_info(hostname)
+    if not baseline_info:
+        raise HTTPException(status_code=404, detail=f"No baseline found for {hostname}")
+    return baseline_info

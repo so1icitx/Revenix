@@ -1,10 +1,22 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Laptop } from 'lucide-react'
+import { Laptop, Activity, Network, Shield } from 'lucide-react'
+
+interface DeviceProfile {
+    hostname: string
+    trained: boolean
+    flow_count: number
+    baseline?: {
+        avg_bytes_per_flow: number
+        avg_packets_per_flow: number
+        common_destinations_count: number
+        common_ports_count: number
+    }
+}
 
 export default function EndpointsPage() {
-    const [devices, setDevices] = useState<any[]>([])
+    const [devices, setDevices] = useState<DeviceProfile[]>([])
 
     useEffect(() => {
         const fetchDevices = async () => {
@@ -12,6 +24,7 @@ export default function EndpointsPage() {
                 const response = await fetch('http://localhost:8001/devices/profiles')
                 if (response.ok) {
                     const data = await response.json()
+                    console.log('[v0] Devices fetched:', data)
                     setDevices(data.profiles || [])
                 }
             } catch (error) {
@@ -23,6 +36,12 @@ export default function EndpointsPage() {
         const interval = setInterval(fetchDevices, 5000)
         return () => clearInterval(interval)
     }, [])
+
+    const formatBytes = (bytes: number) => {
+        if (bytes < 1024) return `${bytes} B`
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+                return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    }
 
     return (
         <div className="p-8 animate-fadeIn">
@@ -51,17 +70,51 @@ export default function EndpointsPage() {
             <div className={`w-3 h-3 rounded-full ${device.trained ? 'bg-green-500' : 'bg-yellow-500'} animate-pulse`}></div>
             </div>
 
-            <div className="space-y-2 pt-4 border-t border-gray-800">
+            <div className="space-y-3 pt-4 border-t border-gray-800">
             <div className="flex justify-between text-sm">
             <span className="text-gray-500">Status</span>
             <span className={device.trained ? 'text-green-500' : 'text-yellow-500'}>
             {device.trained ? 'Profile Trained' : 'Learning...'}
             </span>
             </div>
+
+            {device.baseline && (
+                <>
+                <div className="flex items-center gap-2 text-sm">
+                <Activity className="w-4 h-4 text-[#00eaff]" />
+                <span className="text-gray-500">Avg Flow Size</span>
+                <span className="ml-auto text-white">
+                {formatBytes(device.baseline.avg_bytes_per_flow)}
+                </span>
+                </div>
+
+                <div className="flex items-center gap-2 text-sm">
+                <Network className="w-4 h-4 text-[#00eaff]" />
+                <span className="text-gray-500">Avg Packets/Flow</span>
+                <span className="ml-auto text-white">
+                {device.baseline.avg_packets_per_flow.toFixed(1)}
+                </span>
+                </div>
+
+                <div className="flex items-center gap-2 text-sm">
+                <Shield className="w-4 h-4 text-[#00eaff]" />
+                <span className="text-gray-500">Known Destinations</span>
+                <span className="ml-auto text-white">
+                {device.baseline.common_destinations_count}
+                </span>
+                </div>
+                </>
+            )}
             </div>
             </div>
         ))}
         </div>
+
+        {devices.length === 0 && (
+            <div className="text-center py-12 text-gray-500">
+            No devices detected yet. Waiting for network traffic...
+            </div>
+        )}
         </div>
     )
 }

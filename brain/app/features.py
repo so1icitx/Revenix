@@ -33,6 +33,9 @@ class FlowFeatureExtractor:
         # Packets per second (flow rate)
         features['packets_per_sec'] = packets / duration if duration > 0 else 0
 
+        # Bytes per second (bandwidth usage)
+        features['bytes_per_sec'] = total_bytes / duration if duration > 0 else 0
+
         # Bytes per packet (payload size)
         features['bytes_per_packet'] = total_bytes / packets if packets > 0 else 0
 
@@ -41,6 +44,9 @@ class FlowFeatureExtractor:
 
         # Total packets
         features['total_packets'] = packets
+
+        # Inter-packet time variation (measure of consistency)
+        features['inter_packet_variation'] = self._calculate_packet_variation(packets, duration)
 
         # Port features
         src_port = flow.get('src_port', 0)
@@ -64,6 +70,9 @@ class FlowFeatureExtractor:
 
         # Burstiness (variance in packet timing)
         features['burstiness'] = self._calculate_burstiness(packets, duration)
+
+        # Flow directionality ratio (bidirectional analysis)
+        features['flow_ratio'] = self._calculate_flow_ratio(flow)
 
         return features
 
@@ -89,16 +98,19 @@ class FlowFeatureExtractor:
         return [
             'duration',
             'packets_per_sec',
+            'bytes_per_sec',  # Added bytes_per_sec
             'bytes_per_packet',
             'total_bytes',
             'total_packets',
+            'inter_packet_variation',  # Added variation metric
             'src_port',
             'dst_port',
             'is_well_known_port',
             'is_ephemeral_port',
             'protocol',
             'port_entropy',
-            'burstiness'
+            'burstiness',
+            'flow_ratio',  # Added flow ratio
         ]
 
     def _calculate_port_entropy(self, src_port: int, dst_port: int) -> float:
@@ -142,3 +154,41 @@ class FlowFeatureExtractor:
         burstiness = min(avg_rate / 100.0, 1.0)
 
         return burstiness
+
+    def _calculate_packet_variation(self, packets: int, duration: float) -> float:
+        """
+        Calculate inter-packet time variation.
+        Low variation = steady stream (normal)
+        High variation = irregular bursts (suspicious)
+        """
+        if packets <= 1 or duration == 0:
+            return 0.0
+
+        # Average time between packets
+        avg_interval = duration / (packets - 1)
+
+        # Estimate coefficient of variation (simplified)
+        # In practice, this would use actual packet timestamps
+        # Higher value = more variation
+        cv = min(1.0 / avg_interval if avg_interval > 0 else 0.0, 1.0)
+
+        return cv
+
+    def _calculate_flow_ratio(self, flow: Dict) -> float:
+        """
+        Calculate flow directionality ratio.
+        Useful for detecting asymmetric flows (data exfiltration, DDoS).
+        """
+        # In full implementation, would compare forward/reverse flow bytes
+        # Simplified: use packet count as proxy
+        packets = flow.get('packets', 0)
+        total_bytes = flow.get('bytes', 0)
+
+        if packets == 0:
+            return 0.0
+
+        # Ratio of bytes to packets (payload density)
+        ratio = total_bytes / packets if packets > 0 else 0
+
+        # Normalize to 0-1
+        return min(ratio / 1500.0, 1.0)  # 1500 = typical MTU

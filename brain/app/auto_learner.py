@@ -11,6 +11,7 @@ from .device_profiler import DeviceProfiler
 from .rule_recommender import RuleRecommender
 from .threat_explainer import ThreatExplainer  # Added threat explainer
 from .threat_classifier import ThreatClassifier  # Added threat classifier import
+from .baseline_tracker import BaselineTracker  # Import baseline tracker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,7 +46,9 @@ class AutoLearner:
         self.device_profiler = device_profiler
         self.rule_recommender = RuleRecommender()
         self.threat_explainer = ThreatExplainer()
-        self.threat_classifier = ThreatClassifier()  # Initialize threat classifier
+        self.threat_classifier = ThreatClassifier()
+
+        self.baseline_tracker = BaselineTracker()
 
         self.flows_seen = 0
         self.last_flow_id = None
@@ -135,6 +138,9 @@ class AutoLearner:
             if len(self.device_flows[hostname]) > 200:
                 self.device_flows[hostname] = self.device_flows[hostname][-200:]
 
+        for hostname, device_flow_list in self.device_flows.items():
+            self.baseline_tracker.update_baseline(hostname, device_flow_list[-50:])  # Use recent flows
+
     async def _train_device_profiles(self):
         """Train individual profiles for each device."""
         for hostname, flows in self.device_flows.items():
@@ -187,7 +193,7 @@ class AutoLearner:
             predictions, risk_scores = self.anomaly_detector.predict(features)
 
             alerts_created = 0
-            whitelisted_count = 0  # Track whitelisted traffic
+            whitelisted_count = 0
 
             for i, flow in enumerate(flows):
                 risk_score = float(risk_scores[i])
@@ -197,24 +203,30 @@ class AutoLearner:
                 if device_risk_score is not None:
                     risk_score = max(risk_score, device_risk_score)
 
+                hostname = flow.get('hostname', 'unknown')
+                baseline_deviation = self.baseline_tracker.get_deviation_score(hostname, flow)
+
+                # Combine ML score with baseline deviation
+                risk_score = max(risk_score, baseline_deviation)
+
                 features_dict = self.feature_extractor.extract_features(flow)
                 threat_category, threat_confidence, classification_reason = self.threat_classifier.classify_threat(
                     flow, features_dict, risk_score
                 )
 
-                # Only create alerts for actual threats, not whitelisted traffic
                 if threat_category is None:
                     whitelisted_count += 1
                     continue
 
-                # Use classifier confidence if higher than ML score
                 final_risk_score = max(risk_score, threat_confidence)
 
                 if final_risk_score >= self.alert_threshold:
+                    baseline_info = self.baseline_tracker.get_baseline_info(hostname)
                     await self.create_alert(
                         session, flow, final_risk_score, is_anomaly,
                         threat_category=threat_category,
-                        threat_reason=classification_reason
+                        threat_reason=classification_reason,
+                        baseline_info=baseline_info
                     )
                     alerts_created += 1
 
@@ -248,8 +260,9 @@ class AutoLearner:
         flow: Dict,
         risk_score: float,
         is_anomaly: bool,
-        threat_category: Optional[str] = None,  # Added threat category parameter
-        threat_reason: Optional[str] = None     # Added classification reason
+        threat_category: Optional[str] = None,
+        threat_reason: Optional[str] = None,
+        baseline_info: Optional[Dict] = None  # Added baseline info
     ):
         """Send alert to API and recommend firewall rules."""
         try:
@@ -265,10 +278,9 @@ class AutoLearner:
                     risk_score=risk_score,
                     features=features_dict,
                     device_profile_trained=profile_status.get('trained', False),
-                    baseline_comparison=None
+                    baseline_comparison=baseline_info
                 )
 
-            # Get severity from classifier if category exists
             if threat_category:
                 severity = self.threat_classifier.get_threat_severity(threat_category, risk_score)
             else:
@@ -291,7 +303,7 @@ class AutoLearner:
                 "risk_score": risk_score,
                 "severity": severity,
                 "reason": full_reason,
-                "threat_category": threat_category  # Include threat category
+                "threat_category": threat_category
             }
 
             async with session.post(
