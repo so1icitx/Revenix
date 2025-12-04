@@ -6,8 +6,11 @@ from .features import FlowFeatureExtractor
 from .anomaly_detector import AnomalyDetector
 from .device_profiler import DeviceProfiler  # Import device profiler
 from .baseline_tracker import BaselineTracker  # Import baseline tracker
+from .autoencoder_detector import AutoencoderDetector  # Added autoencoder import
 import numpy as np
 import asyncio
+
+from . import auto_learner as auto_learner_module
 
 app = FastAPI()
 
@@ -23,7 +26,8 @@ app.add_middleware(
 feature_extractor = FlowFeatureExtractor()
 anomaly_detector = AnomalyDetector(contamination=0.1)
 device_profiler = DeviceProfiler(save_dir="/app/models/profiles")
-baseline_tracker = BaselineTracker(save_dir="/app/models/baselines")  # Initialize baseline tracker
+baseline_tracker = BaselineTracker(save_dir="/app/models/baselines")
+autoencoder_detector = AutoencoderDetector(save_dir="/app/models/autoencoders")  # Initialize autoencoder detector
 
 class Flow(BaseModel):
     flow_id: str = ""
@@ -155,21 +159,28 @@ def model_status():
     }
 
 @app.get("/devices/profiles")
-def list_device_profiles():
-    """List all device behavior profiles."""
-    profiles = device_profiler.list_profiles()
+async def get_device_profiles():
+    """
+    Get device profiles with baseline and autoencoder information.
+    """
+    active_autoencoder = auto_learner_module.auto_learner.autoencoder_detector if auto_learner_module.auto_learner else autoencoder_detector
 
-    # Enrich with baseline data
-    for profile in profiles:
-        hostname = profile['hostname']
+    profiles = []
+
+    for hostname in device_profiler.profiles.keys():
+        profile_status = device_profiler.get_profile_status(hostname)
         baseline_info = baseline_tracker.get_baseline_info(hostname)
-        if baseline_info:
-            profile['baseline'] = {
-                'avg_bytes_per_flow': baseline_info.get('avg_bytes_per_flow', 0),
-                'avg_packets_per_flow': baseline_info.get('avg_packets_per_flow', 0),
-                'common_destinations_count': len(baseline_info.get('common_destinations', {})),
-                'common_ports_count': len(baseline_info.get('common_ports', {}))
-            }
+
+        autoencoder_status = active_autoencoder.get_device_status(hostname)
+
+        profile = {
+            "hostname": hostname,
+            "trained": profile_status.get('trained', False),  # Isolation Forest trained status
+            "flow_count": profile_status.get('flow_count', 0),
+            "baseline": baseline_info,
+            "autoencoder": autoencoder_status
+        }
+        profiles.append(profile)
 
     return {
         "profiles": profiles,
@@ -187,6 +198,9 @@ def get_device_profile(hostname: str):
     if baseline_info:
         status['baseline'] = baseline_info
 
+    autoencoder_status = autoencoder_detector.get_device_status(hostname)
+    status['autoencoder'] = autoencoder_status
+
     return status
 
 @app.get("/devices/{hostname}/baseline")
@@ -196,3 +210,41 @@ def get_device_baseline(hostname: str):
     if not baseline_info:
         raise HTTPException(status_code=404, detail=f"No baseline found for {hostname}")
     return baseline_info
+
+@app.get("/autoencoders/status")
+def get_autoencoders_status():
+    """
+    Get status of all trained autoencoders.
+    """
+    devices = autoencoder_detector.get_all_devices()
+
+    statuses = []
+    for hostname in devices:
+        status = autoencoder_detector.get_device_status(hostname)
+        statuses.append({
+            "hostname": hostname,
+            **status
+        })
+
+    return {
+        "trained_devices": len(devices),
+        "autoencoders": statuses
+    }
+
+@app.get("/autoencoders/{hostname}")
+def get_device_autoencoder(hostname: str):
+    """
+    Get autoencoder details for specific device.
+    """
+    status = autoencoder_detector.get_device_status(hostname)
+
+    if not status['trained']:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No trained autoencoder for device: {hostname}"
+        )
+
+    return {
+        "hostname": hostname,
+        **status
+    }

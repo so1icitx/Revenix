@@ -48,18 +48,31 @@ export default function ThreatsPage() {
 
     const formatDate = (timestamp: string) => {
         try {
-            const date = new Date(timestamp)
-            if (isNaN(date.getTime())) {
-                return 'Unknown'
+            let date: Date
+
+            if (/^\d+(\.\d+)?$/.test(timestamp)) {
+                date = new Date(parseFloat(timestamp) * 1000)
+            } else {
+                date = new Date(timestamp)
             }
+
+            if (isNaN(date.getTime())) {
+                console.error('[v0] Invalid timestamp:', timestamp)
+                return 'Invalid date'
+            }
+
             return date.toLocaleString('en-US', {
                 month: 'short',
                 day: 'numeric',
+                year: 'numeric',
                 hour: '2-digit',
-                minute: '2-digit'
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
             })
         } catch (error) {
-            return 'Unknown'
+            console.error('[v0] Date formatting error:', error, 'for timestamp:', timestamp)
+            return 'Invalid date'
         }
     }
 

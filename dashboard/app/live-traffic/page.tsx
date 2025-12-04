@@ -15,14 +15,33 @@ interface Flow {
     end_ts: number
 }
 
+const CHART_STORAGE_KEY = 'revenix_live_traffic_chart'
+
 export default function LiveTrafficPage() {
     const [flows, setFlows] = useState<Flow[]>([])
     const [currentStats, setCurrentStats] = useState({ packets: 0, bytes: 0 })
-    const [chartData, setChartData] = useState<{ packets: number[], bytes: number[], timestamps: string[] }>({
-        packets: Array(60).fill(0),
+    const [chartData, setChartData] = useState<{ packets: number[], bytes: number[], timestamps: string[] }>(() => {
+        if (typeof window !== 'undefined') {
+            const stored = sessionStorage.getItem(CHART_STORAGE_KEY)
+            if (stored) {
+                try {
+                    return JSON.parse(stored)
+                } catch {}
+            }
+        }
+        return {
+            packets: Array(60).fill(0),
                                                                                                              bytes: Array(60).fill(0),
                                                                                                              timestamps: []
+        }
     })
+    const [activeFlowsCount, setActiveFlowsCount] = useState(0)
+
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            sessionStorage.setItem(CHART_STORAGE_KEY, JSON.stringify(chartData))
+        }
+    }, [chartData])
 
     useEffect(() => {
         const fetchFlows = async () => {
@@ -30,18 +49,20 @@ export default function LiveTrafficPage() {
                 const response = await fetch('http://localhost:8000/flows/recent')
                 if (!response.ok) throw new Error('Failed to fetch')
                     const data = await response.json()
-                    setFlows(data)
 
                     const now = Date.now() / 1000
-                    const recentFlows = data.filter((f: any) => now - f.end_ts < 30)
+                    const thirtySecondsAgo = now - 30
+                    const recentFlows = data.filter((f: any) => f.end_ts >= thirtySecondsAgo)
 
                     const totalPackets = recentFlows.reduce((sum: number, f: any) => sum + (f.packets || 0), 0)
                     const totalBytes = recentFlows.reduce((sum: number, f: any) => sum + (f.bytes || 0), 0)
 
-                    const packetsPerSec = totalPackets / 30
-                    const bytesPerSec = totalBytes / 30
+                    const packetsPerSec = Math.round(totalPackets / 30)
+                    const bytesPerSec = Math.round(totalBytes / 30)
 
                     setCurrentStats({ packets: packetsPerSec, bytes: bytesPerSec })
+                    setActiveFlowsCount(data.length)
+                    setFlows(data)
 
                     setChartData(prev => ({
                         packets: [...prev.packets.slice(-59), packetsPerSec],
@@ -49,7 +70,7 @@ export default function LiveTrafficPage() {
                                           timestamps: [...prev.timestamps.slice(-59), new Date().toLocaleTimeString()]
                     }))
             } catch (error) {
-                console.error('[v0] Fetch error:', error)
+                console.error('Fetch error:', error)
             }
         }
 
@@ -58,8 +79,31 @@ export default function LiveTrafficPage() {
         return () => clearInterval(interval)
     }, [])
 
-    const maxPackets = Math.max(...chartData.packets, 10)
-    const maxBytes = Math.max(...chartData.bytes, 1024)
+    const maxPackets = Math.max(...chartData.packets, 100)
+    const maxBytes = Math.max(...chartData.bytes, 10240)
+
+    const formatBytes = (bytes: number) => {
+        if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+            if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+                return `${bytes} B`
+    }
+
+    const yAxisLabels = {
+        packets: [
+            Math.round(maxPackets),
+            Math.round(maxPackets * 0.75),
+            Math.round(maxPackets * 0.5),
+            Math.round(maxPackets * 0.25),
+            0
+        ],
+        bytes: [
+            maxBytes,
+            Math.round(maxBytes * 0.75),
+            Math.round(maxBytes * 0.5),
+            Math.round(maxBytes * 0.25),
+            0
+        ]
+    }
 
     return (
         <div className="p-8 animate-fadeIn">
@@ -95,8 +139,18 @@ export default function LiveTrafficPage() {
         </div>
         </div>
 
-        <div className="h-48 relative bg-gray-950/50 rounded-lg p-4">
-        <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <div className="h-48 relative bg-gray-950/50 rounded-lg p-4 flex">
+        {/* Y-axis labels */}
+        <div className="flex flex-col justify-between py-1 pr-2 text-xs text-gray-500 w-16">
+        <span>{yAxisLabels.bytes[0]}</span>
+        <span>{yAxisLabels.bytes[1]}</span>
+        <span>{yAxisLabels.bytes[2]}</span>
+        <span>{yAxisLabels.bytes[3]}</span>
+        <span>{yAxisLabels.bytes[4]}</span>
+        </div>
+
+        {/* Chart */}
+        <svg className="flex-1 h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
         <defs>
         <linearGradient id="packetGradient" x1="0" x2="0" y1="0" y2="1">
         <stop offset="0%" stopColor="#00eaff" stopOpacity="0.3" />
@@ -170,7 +224,7 @@ export default function LiveTrafficPage() {
         <div>
         <p className="text-xs text-gray-500 mb-1">Current Packets/sec</p>
         <p className="text-xl font-bold text-[#00eaff]">
-        {currentStats.packets.toFixed(1)}
+        {currentStats.packets}
         </p>
         </div>
         <div>
@@ -181,7 +235,7 @@ export default function LiveTrafficPage() {
         </div>
         <div>
         <p className="text-xs text-gray-500 mb-1">Active Flows</p>
-        <p className="text-xl font-bold text-gray-300">{flows.length}</p>
+        <p className="text-xl font-bold text-gray-300">{activeFlowsCount}</p>
         </div>
         </div>
         </div>
@@ -217,6 +271,13 @@ export default function LiveTrafficPage() {
             </td>
             </tr>
         ))}
+        {flows.length > 50 && (
+            <tr>
+            <td colSpan={7} className="px-4 py-3 text-sm text-center text-gray-500 bg-gray-900/30">
+            Showing first 50 of {flows.length} total flows
+            </td>
+            </tr>
+        )}
         </tbody>
         </table>
         </div>

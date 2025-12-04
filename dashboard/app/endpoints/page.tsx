@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Laptop, Activity, Network, Shield } from 'lucide-react'
+import { Laptop, Activity, Network, Shield, Brain } from 'lucide-react'
 
 interface DeviceProfile {
     hostname: string
@@ -12,6 +12,11 @@ interface DeviceProfile {
         avg_packets_per_flow: number
         common_destinations_count: number
         common_ports_count: number
+    }
+    autoencoder?: {
+        trained: boolean
+        threshold: number | null
+        encoding_dim: number
     }
 }
 
@@ -52,7 +57,7 @@ export default function EndpointsPage() {
         </div>
         <div>
         <h1 className="text-3xl font-bold">Endpoint Monitoring</h1>
-        <p className="text-gray-500">Connected devices and behavioral profiles</p>
+        <p className="text-gray-500">Connected devices with AI-powered behavioral analysis</p>
         </div>
         </div>
         </div>
@@ -72,11 +77,23 @@ export default function EndpointsPage() {
 
             <div className="space-y-3 pt-4 border-t border-gray-800">
             <div className="flex justify-between text-sm">
-            <span className="text-gray-500">Status</span>
+            <span className="text-gray-500">Isolation Forest</span>
             <span className={device.trained ? 'text-green-500' : 'text-yellow-500'}>
-            {device.trained ? 'Profile Trained' : 'Learning...'}
+            {device.trained ? 'Trained' : 'Learning...'}
             </span>
             </div>
+
+            {device.autoencoder && (
+                <div className="flex justify-between text-sm">
+                <span className="text-gray-500 flex items-center gap-1">
+                <Brain className="w-3 h-3" />
+                Autoencoder
+                </span>
+                <span className={device.autoencoder.trained ? 'text-green-500' : 'text-yellow-500'}>
+                {device.autoencoder.trained ? 'Trained' : 'Learning...'}
+                </span>
+                </div>
+            )}
 
             {device.baseline && (
                 <>
@@ -104,6 +121,20 @@ export default function EndpointsPage() {
                 </span>
                 </div>
                 </>
+            )}
+
+            {device.autoencoder?.trained && device.autoencoder.threshold && (
+                <div className="mt-3 pt-3 border-t border-gray-800">
+                <div className="text-xs text-gray-500 mb-1">AI Detection Models</div>
+                <div className="flex gap-2">
+                <div className="flex-1 bg-green-500/10 border border-green-500/30 rounded px-2 py-1 text-center">
+                <div className="text-[10px] text-green-500">IF Model</div>
+                </div>
+                <div className="flex-1 bg-green-500/10 border border-green-500/30 rounded px-2 py-1 text-center">
+                <div className="text-[10px] text-green-500">Autoencoder</div>
+                </div>
+                </div>
+                </div>
             )}
             </div>
             </div>

@@ -11,12 +11,12 @@ class AnomalyDetector:
     Detects unusual patterns that may indicate attacks or threats.
     """
 
-    def __init__(self, contamination=0.1):
+    def __init__(self, contamination=0.05):  # Reduced from 0.1 to 0.05 (expect only 5% anomalies instead of 10%)
         """
         Initialize anomaly detector.
 
         Args:
-            contamination: Expected proportion of anomalies (0.1 = 10%)
+            contamination: Expected proportion of anomalies (0.05 = 5%)
         """
         self.model = IsolationForest(
             contamination=contamination,

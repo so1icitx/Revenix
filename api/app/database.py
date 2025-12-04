@@ -2,6 +2,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Text
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://revenix:revenix123@postgres:5432/revenix_db")
 
@@ -13,13 +16,18 @@ def init_database():
     """Initialize database schema with all required columns."""
     from sqlalchemy import text
 
-    with engine.connect() as conn:
-        # Add threat_category column if it doesn't exist
-        conn.execute(text("""
-            ALTER TABLE alerts
-            ADD COLUMN IF NOT EXISTS threat_category TEXT DEFAULT 'ANOMALOUS BEHAVIOR';
-        """))
-        conn.commit()
+    try:
+        with engine.connect() as conn:
+            logger.info("Adding threat_category column to alerts table...")
+            result = conn.execute(text("""
+                ALTER TABLE alerts
+                ADD COLUMN IF NOT EXISTS threat_category TEXT DEFAULT 'ANOMALOUS BEHAVIOR';
+            """))
+            conn.commit()
+            logger.info("threat_category column added successfully")
+    except Exception as e:
+        logger.error(f"Database init error: {e}")
+        raise
 
 def get_db():
     db = SessionLocal()

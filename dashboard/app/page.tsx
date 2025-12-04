@@ -17,6 +17,10 @@ interface Stats {
     medium: number
     low: number
   }
+  trend?: {
+    value: string
+    positive: boolean
+  }
 }
 
 export default function Page() {
@@ -34,6 +38,7 @@ export default function Page() {
       low: 0
     }
   })
+  const [prevHourTraffic, setPrevHourTraffic] = useState(0)
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -46,7 +51,6 @@ export default function Page() {
         const alertsRes = await fetch('http://localhost:8000/alerts/recent')
         const alerts = await alertsRes.json()
 
-        // Calculate total packets
         const totalPackets = flows.reduce((sum: number, flow: any) => sum + (flow.packets || 0), 0)
 
         // Count threats by severity
@@ -60,8 +64,28 @@ export default function Page() {
         // Count unique devices
         const uniqueDevices = new Set(flows.map((f: any) => f.hostname)).size
 
-        // Generate sparkline data
-        const sparkline = Array.from({ length: 20 }, () => Math.floor(Math.random() * 100) + 50)
+        const now = Date.now() / 1000
+        const sparkline = []
+        for (let i = 19; i >= 0; i--) {
+          const timeWindow = now - (i * 60) // 1 minute windows
+          const windowFlows = flows.filter((f: any) =>
+          f.end_ts >= timeWindow - 60 && f.end_ts < timeWindow
+          )
+          const windowPackets = windowFlows.reduce((sum: number, f: any) => sum + (f.packets || 0), 0)
+          sparkline.push(windowPackets)
+        }
+
+        let trendValue = "0%"
+        let trendPositive = true
+        if (prevHourTraffic > 0) {
+          const change = ((totalPackets - prevHourTraffic) / prevHourTraffic) * 100
+          trendPositive = change >= 0
+          trendValue = `${Math.abs(change).toFixed(1)}%`
+        }
+        // Update previous hour traffic every hour
+        if (Date.now() % 3600000 < 2000) {
+          setPrevHourTraffic(totalPackets)
+        }
 
         setStats({
           totalTraffic: totalPackets,
@@ -69,7 +93,8 @@ export default function Page() {
           activeEndpoints: uniqueDevices,
           systemHealth: 98,
           trafficSparkline: sparkline,
-          threatBreakdown
+          threatBreakdown,
+          trend: { value: trendValue, positive: trendPositive }
         })
       } catch (error) {
         console.error('[v0] Failed to fetch stats:', error)
@@ -79,7 +104,7 @@ export default function Page() {
     fetchStats()
     const interval = setInterval(fetchStats, 2000)
     return () => clearInterval(interval)
-  }, [])
+  }, [prevHourTraffic])
 
   return (
     <div className="p-8 animate-fadeIn">
@@ -95,7 +120,7 @@ export default function Page() {
     value={stats.totalTraffic.toLocaleString()}
     subtitle="packets processed"
     icon={Activity}
-    trend={{ value: "12.5%", positive: true }}
+    trend={stats.trend || { value: "0%", positive: true }}
     sparkline={stats.trafficSparkline}
     />
 

@@ -12,6 +12,7 @@ from .rule_recommender import RuleRecommender
 from .threat_explainer import ThreatExplainer  # Added threat explainer
 from .threat_classifier import ThreatClassifier  # Added threat classifier import
 from .baseline_tracker import BaselineTracker  # Import baseline tracker
+from .autoencoder_detector import AutoencoderDetector  # Added autoencoder import
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class AutoLearner:
         api_url: str = "http://api:8000",
         check_interval: int = 60,
         training_threshold: int = 100,
-        alert_threshold: float = 0.75,
+        alert_threshold: float = 0.85,
         retrain_interval: int = 3600,
         model_save_path: str = "/app/models/anomaly_model.pkl"
     ):
@@ -50,11 +51,14 @@ class AutoLearner:
 
         self.baseline_tracker = BaselineTracker()
 
+        self.autoencoder_detector = AutoencoderDetector()
+
         self.flows_seen = 0
         self.last_flow_id = None
         self.last_retrain_time = 0
         self.baseline_flows = []
         self.device_flows = {}
+        self.device_flow_counts = {}
 
     async def start(self):
         """Start the auto-learning loop."""
@@ -133,28 +137,58 @@ class AutoLearner:
             hostname = flow.get('hostname', 'unknown')
             if hostname not in self.device_flows:
                 self.device_flows[hostname] = []
+            if hostname not in self.device_flow_counts:
+                self.device_flow_counts[hostname] = 0
+            self.device_flow_counts[hostname] += 1
+
             self.device_flows[hostname].append(flow)
 
             if len(self.device_flows[hostname]) > 200:
                 self.device_flows[hostname] = self.device_flows[hostname][-200:]
 
         for hostname, device_flow_list in self.device_flows.items():
-            self.baseline_tracker.update_baseline(hostname, device_flow_list[-50:])  # Use recent flows
+            self.baseline_tracker.update_baseline(hostname, device_flow_list[-50:])
 
     async def _train_device_profiles(self):
         """Train individual profiles for each device."""
         for hostname, flows in self.device_flows.items():
             profile_status = self.device_profiler.get_profile_status(hostname)
 
-            if not profile_status['trained'] and len(flows) >= 30:
+            if not profile_status['trained'] and len(flows) >= 25:
                 try:
                     features = self.feature_extractor.extract_features_batch(flows)
                     feature_names = self.feature_extractor.get_feature_names()
 
                     self.device_profiler.train_device(hostname, features, feature_names)
-                    logger.info(f"[AutoLearner] ✓ Trained profile for device: {hostname} ({len(flows)} flows)")
+                    logger.info(f"[AutoLearner] ✓ Trained Isolation Forest for device: {hostname} ({len(flows)} flows)")
                 except Exception as e:
                     logger.error(f"[AutoLearner] Failed to train profile for {hostname}: {e}")
+
+            autoencoder_status = self.autoencoder_detector.get_device_status(hostname)
+            flow_count = self.device_flow_counts.get(hostname, len(flows))
+
+            if not autoencoder_status['trained'] and len(flows) >= 8:
+                try:
+                    logger.info(f"[AutoLearner] ⏳ Training autoencoder for {hostname} with {len(flows)} flows (total flows analyzed: {flow_count})...")
+                    features = self.feature_extractor.extract_features_batch(flows)
+                    result = self.autoencoder_detector.train_device(hostname, features, epochs=30)
+
+                    post_training_status = self.autoencoder_detector.get_device_status(hostname)
+
+                    if post_training_status['trained']:
+                        logger.info(f"[AutoLearner] ✅ Autoencoder TRAINED successfully for {hostname}: threshold={post_training_status.get('threshold', 0):.4f}")
+                    else:
+                        logger.error(f"[AutoLearner] ❌ Autoencoder training FAILED for {hostname}: result_status={result.get('status')}, is_trained_flag={post_training_status['trained']}")
+                        model_obj = self.autoencoder_detector.device_models.get(hostname)
+                        if model_obj:
+                            logger.error(f"[AutoLearner] Model object is_trained={model_obj.is_trained}, threshold={model_obj.threshold}")
+                except Exception as e:
+                    logger.error(f"[AutoLearner] ❌ Failed to train autoencoder for {hostname}: {e}", exc_info=True)
+            elif autoencoder_status['trained']:
+                # Already trained - no log spam
+                pass
+            else:
+                logger.debug(f"[AutoLearner] Autoencoder for {hostname}: {len(flows)}/8 flows needed for training")
 
     async def fetch_flows(self, session: aiohttp.ClientSession) -> List[Dict]:
         """Fetch recent flows from API."""
@@ -199,15 +233,27 @@ class AutoLearner:
                 risk_score = float(risk_scores[i])
                 is_anomaly = predictions[i] == -1
 
+                model_scores = [risk_score]
+
                 device_risk_score = await self._check_device_profile(flow, features[i])
                 if device_risk_score is not None:
-                    risk_score = max(risk_score, device_risk_score)
+                    model_scores.append(device_risk_score)
+
+                autoencoder_risk = await self._check_autoencoder(flow, features[i])
+                if autoencoder_risk is not None:
+                    model_scores.append(autoencoder_risk)
 
                 hostname = flow.get('hostname', 'unknown')
                 baseline_deviation = self.baseline_tracker.get_deviation_score(hostname, flow)
 
-                # Combine ML score with baseline deviation
-                risk_score = max(risk_score, baseline_deviation)
+                if baseline_deviation > 0.5:
+                    model_scores.append(baseline_deviation)
+
+                if len(model_scores) >= 2:
+                    model_scores_sorted = sorted(model_scores, reverse=True)
+                    risk_score = (model_scores_sorted[0] + model_scores_sorted[1]) / 2
+                else:
+                    risk_score = model_scores[0]
 
                 features_dict = self.feature_extractor.extract_features(flow)
                 threat_category, threat_confidence, classification_reason = self.threat_classifier.classify_threat(
@@ -252,6 +298,24 @@ class AutoLearner:
             return float(device_risk_scores[0])
         except Exception as e:
             logger.error(f"[AutoLearner] Device profile check failed for {hostname}: {e}")
+            return None
+
+    async def _check_autoencoder(self, flow: Dict, features: np.ndarray) -> Optional[float]:
+        """
+        Check autoencoder reconstruction error for anomaly detection.
+        Added autoencoder-based anomaly detection
+        """
+        hostname = flow.get('hostname', 'unknown')
+
+        if not self.autoencoder_detector.is_device_trained(hostname):
+            return None
+
+        try:
+            features_2d = features.reshape(1, -1)
+            _, autoencoder_risk_scores = self.autoencoder_detector.predict_device(hostname, features_2d)
+            return float(autoencoder_risk_scores[0])
+        except Exception as e:
+            logger.error(f"[AutoLearner] Autoencoder check failed for {hostname}: {e}")
             return None
 
     async def create_alert(
@@ -387,7 +451,7 @@ async def start_auto_learner(anomaly_detector, feature_extractor, device_profile
         api_url="http://api:8000",
         check_interval=60,
         training_threshold=100,
-        alert_threshold=0.75,
+        alert_threshold=0.85,
         retrain_interval=3600,
         model_save_path="/app/models/anomaly_model.pkl"
     )

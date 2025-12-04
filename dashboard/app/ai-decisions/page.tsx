@@ -91,7 +91,13 @@ export default function AIDecisionsPage() {
             <span className="px-2 py-1 bg-gray-800 rounded text-xs text-gray-400">{rule.status}</span>
             </td>
             <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
-            {new Date(rule.created_at).toLocaleTimeString()}
+            {new Date(rule.created_at).toLocaleString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true
+            })}
             </td>
             </tr>
         ))}

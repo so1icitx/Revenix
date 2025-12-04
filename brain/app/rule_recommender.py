@@ -72,12 +72,12 @@ class RuleRecommender:
             })
 
         protocol = flow.get("protocol", "").upper()
-        if protocol not in ["TCP", "UDP", "ICMP", "ICMPV6"] and risk_score >= 0.7:
+        if protocol not in ["TCP", "UDP", "ICMP", "ICMPV6"] and risk_score >= 0.7 and not self.is_private_ip(src_ip):
             rules.append({
                 "rule_type": "block_protocol",
                 "action": "BLOCK",
-                "target": f"protocol={protocol}",
-                "reason": f"Unusual protocol {protocol} with high risk",
+                "target": src_ip,  # Use src_ip instead of protocol= string
+                "reason": f"Unusual protocol {protocol} with high risk from {src_ip}",
                 "confidence": 0.80
             })
 
@@ -113,7 +113,6 @@ class RuleRecommender:
                 return f"iptables -A FORWARD -s {src} -d {dst} -m limit --limit 100/sec -j ACCEPT"
 
         elif rule_type == "block_protocol":
-            proto = target.replace("protocol=", "")
-            return f"iptables -A INPUT -p {proto} -j DROP"
+            return f"iptables -A INPUT -s {target} -j DROP"
 
         return f"# Unknown rule type: {rule_type}"
