@@ -1,9 +1,66 @@
-target
-node_modules
-__pycache__
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Secrets / Environment
 .env
-.next
-*.log
-*.pyc
-dist
-build
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Rust / Core build outputs
+target/
+core/target/
+core/dist/windows-agent/
+core/.build-cache/
+
+# Binary / link artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+*.rlib
+*.rmeta
+*.obj
+*.exp
+*.pdb
+
+# Test-only content
+tests/
+**/tests/
+**/__tests__/
+
+# Archives / media exports
+*.zip
+*.7z
+dashboard.zip
+*.jpg
+*.jpeg
+*.png
