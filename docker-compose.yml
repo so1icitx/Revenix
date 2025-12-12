@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: revenix
       POSTGRES_PASSWORD: revenix
@@ -8,13 +8,24 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/sql/users.sql:/docker-entrypoint-initdb.d/00-users.sql
       - ./deploy/sql/flows.sql:/docker-entrypoint-initdb.d/01-flows.sql
       - ./deploy/sql/agents.sql:/docker-entrypoint-initdb.d/02-agents.sql
       - ./deploy/sql/alerts.sql:/docker-entrypoint-initdb.d/03-alerts.sql
       - ./deploy/sql/rules.sql:/docker-entrypoint-initdb.d/04-rules.sql
+      - ./deploy/sql/self_healing.sql:/docker-entrypoint-initdb.d/05-self_healing.sql
+      - ./deploy/sql/002_permanent_ips.sql:/docker-entrypoint-initdb.d/06-permanent_ips.sql
+      - ./deploy/sql/003_firewall_sync_log.sql:/docker-entrypoint-initdb.d/07-firewall_sync_log.sql
+      - ./deploy/sql/004_alerting_webhooks.sql:/docker-entrypoint-initdb.d/08-alerting_webhooks.sql
+      - ./deploy/sql/005_add_training_safe.sql:/docker-entrypoint-initdb.d/09-training_safe.sql
     networks:
       - revenix-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U revenix -d revenix_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:latest
@@ -23,19 +34,33 @@ services:
       - "0.0.0.0:6379:6379"
     networks:
       - revenix-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   api:
     build: ./api
     ports:
       - "0.0.0.0:8000:8000"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://revenix:revenix@postgres:5432/revenix_db
+      - DATABASE_URL=postgresql+asyncpg://revenix:revenix@postgres:5432/revenix_db
       - REDIS_URL=redis://redis:6379
+      - JWT_SECRET_KEY=rVx9$$kL2mN8pQ4wE7yT1uI6oA3sD5fG0hJ
     networks:
       - revenix-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   brain:
     build: ./brain
@@ -43,8 +68,22 @@ services:
       - "8001:8001"
     volumes:
       - brain_models:/app/models
+    environment:
+      - API_BASE_URL=http://api:8000
+      - JWT_SECRET_KEY=rVx9$$kL2mN8pQ4wE7yT1uI6oA3sD5fG0hJ
+    depends_on:
+      api:
+        condition: service_healthy
     networks:
       - revenix-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    cap_add:
+      - NET_ADMIN
 
   core:
     build: ./core
@@ -56,6 +95,12 @@ services:
     environment:
       - REDIS_URL=redis://localhost:6379
       - API_URL=http://localhost:8000
+      - NETWORK_INTERFACE=${NETWORK_INTERFACE:-}
+      - PROMISCUOUS_MODE=${PROMISCUOUS_MODE:-true}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   dashboard:
     build: ./dashboard
