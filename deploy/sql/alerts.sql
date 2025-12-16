@@ -10,9 +10,11 @@ CREATE TABLE alerts (
     risk_score FLOAT NOT NULL,
     severity TEXT NOT NULL,
     reason TEXT NOT NULL,
+    threat_category TEXT DEFAULT 'ANOMALOUS BEHAVIOR',
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_alerts_timestamp ON alerts(timestamp DESC);
 CREATE INDEX idx_alerts_severity ON alerts(severity);
 CREATE INDEX idx_alerts_hostname ON alerts(hostname);
+CREATE INDEX idx_alerts_src_ip ON alerts(src_ip);
