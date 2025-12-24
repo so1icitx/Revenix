@@ -1,9 +1,16 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import os
 
-# Create async engine
+# Use environment variable for database URL (never hardcode credentials!)
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql+asyncpg://revenix:revenix@postgres:5432/revenix_db"
+)
+
+# Create async engine (echo=False for production - don't log SQL)
 engine = create_async_engine(
-    "postgresql+asyncpg://revenix:revenix@postgres:5432/revenix_db",
-    echo=True,
+    DATABASE_URL,
+    echo=False,  # Disable SQL logging in production for security + performance
 )
 
 # Create async session factory
