@@ -11,12 +11,13 @@ class AnomalyDetector:
     Detects unusual patterns that may indicate attacks or threats.
     """
 
-    def __init__(self, contamination=0.05):  # Reduced from 0.1 to 0.05 (expect only 5% anomalies instead of 10%)
+    def __init__(self, contamination=0.01, novelty_mode=False):  # Reduced from 0.05 to 0.01 (expect only 1% anomalies instead of 5%)
         """
         Initialize anomaly detector.
 
         Args:
-            contamination: Expected proportion of anomalies (0.05 = 5%)
+            contamination: Expected proportion of anomalies (0.01 = 1%)
+            novelty_mode: If True, use novelty detection (assumes training data is clean)
         """
         self.model = IsolationForest(
             contamination=contamination,
@@ -28,14 +29,17 @@ class AnomalyDetector:
         self.scaler = StandardScaler()
         self.is_trained = False
         self.feature_names = []
+        self.novelty_mode = novelty_mode
+        self.training_flow_ids = set()
 
-    def train(self, features: np.ndarray, feature_names: List[str]):
+    def train(self, features: np.ndarray, feature_names: List[str], flow_ids: List[int]):
         """
         Train the model on normal traffic baseline.
 
         Args:
             features: 2D array of shape (n_samples, n_features)
             feature_names: List of feature names
+            flow_ids: List of flow IDs corresponding to the features
         """
         if len(features) == 0:
             raise ValueError("Cannot train on empty dataset")
@@ -47,6 +51,7 @@ class AnomalyDetector:
         self.model.fit(features_scaled)
         self.is_trained = True
         self.feature_names = feature_names
+        self.training_flow_ids.update(flow_ids)
 
         return {
             "status": "trained",
@@ -113,7 +118,9 @@ class AnomalyDetector:
             'model': self.model,
             'scaler': self.scaler,
             'feature_names': self.feature_names,
-            'is_trained': self.is_trained
+            'is_trained': self.is_trained,
+            'training_flow_ids': self.training_flow_ids,
+            'novelty_mode': self.novelty_mode
         }
 
         with open(path, 'wb') as f:
@@ -131,5 +138,7 @@ class AnomalyDetector:
         self.scaler = model_data['scaler']
         self.feature_names = model_data['feature_names']
         self.is_trained = model_data['is_trained']
+        self.training_flow_ids = model_data['training_flow_ids']
+        self.novelty_mode = model_data['novelty_mode']
 
         return {"status": "loaded", "n_features": len(self.feature_names)}
