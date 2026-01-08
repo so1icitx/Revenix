@@ -1,3 +1,4 @@
+import ipaddress
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 import logging
@@ -33,7 +34,16 @@ class ThreatClassifier:
         "8.8.8.8",      # Google DNS
         "1.1.1.1",      # Cloudflare DNS
         "cloudflare",   # Cloudflare services
+
     ]
+
+    LOCAL_MULTICAST_UDP_PORTS = {
+        5353,  # mDNS
+        5355,  # LLMNR
+        1900,  # SSDP/UPnP
+        137,   # NetBIOS Name Service
+        138,   # NetBIOS Datagram
+    }
 
     def __init__(self):
         self.threat_categories = {
@@ -62,6 +72,10 @@ class ThreatClassifier:
         if self._is_whitelisted(flow, features):
             return (None, 0.0, "Legitimate traffic pattern - whitelisted")
 
+        # Suppress common local control-plane traffic to reduce false positives.
+        if self._is_benign_local_control_traffic(flow):
+            return (None, 0.0, "Benign local control-plane traffic - suppressed")
+
         # Check each threat category
         threat_scores = {}
 
@@ -79,6 +93,10 @@ class ThreatClassifier:
 
         # No specific threat pattern matched but ML flagged it
         if risk_score >= 0.75:
+            src_ip = flow.get('src_ip', '')
+            dst_ip = flow.get('dst_ip', '')
+            if self._is_non_routable_or_control_ip(src_ip) or self._is_non_routable_or_control_ip(dst_ip):
+                return (None, 0.0, "Non-routable/control traffic anomaly suppressed")
             return ("anomalous_behavior", risk_score, "Statistical anomaly detected by ML model")
 
         return (None, 0.0, "No threat detected")
@@ -102,10 +120,9 @@ class ThreatClassifier:
                     if packets < 10000 and bytes_val < 100_000_000:  # < 100MB
                         return True
 
-                # DNS with small packets
-                if dst_port == 53:
-                    if packets < 1000 and features.get('bytes_per_packet', 0) < 512:
-                        return True
+                # DNS with small packets - ONLY whitelist if TRULY normal
+                # Removed overly permissive DNS whitelist that was causing missed detections
+                # DNS tunneling check moved to dedicated detector
 
                 # Other common services with moderate traffic
                 if dst_port in self.WHITELIST_PORTS:
@@ -116,6 +133,59 @@ class ThreatClassifier:
         for trusted in self.TRUSTED_RANGES:
             if trusted in dst_ip.lower():
                 return True
+
+        return False
+
+    def _is_non_routable_or_control_ip(self, ip: str) -> bool:
+        """Return True for local-only/control-plane addresses that commonly create noise."""
+        if not ip:
+            return False
+
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            return ip.lower() in {"localhost"}
+
+        return (
+            ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+            or ip_obj.is_reserved
+        )
+
+    def _is_benign_local_control_traffic(self, flow: Dict) -> bool:
+        """
+        Suppress known noisy local traffic patterns (IPv6 NDP/MLD, mDNS/LLMNR/SSDP)
+        that are expected on enterprise and home networks.
+        """
+        protocol = str(flow.get('protocol', '')).upper()
+        src_ip = flow.get('src_ip', '')
+        dst_ip = flow.get('dst_ip', '')
+        src_port = flow.get('src_port') or 0
+        dst_port = flow.get('dst_port') or 0
+        packets = flow.get('packets', 0) or 0
+        bytes_val = flow.get('bytes', 0) or 0
+
+        try:
+            src_obj = ipaddress.ip_address(src_ip)
+            dst_obj = ipaddress.ip_address(dst_ip)
+        except ValueError:
+            return False
+
+        # ICMPv6 to multicast from unspecified/link-local/private sources is usually
+        # local discovery/control chatter (NDP/MLD), not an attack.
+        if protocol in {'ICMPV6', 'ICMP'} and dst_obj.is_multicast:
+            if src_obj.is_unspecified or src_obj.is_link_local or src_obj.is_private:
+                return True
+
+        # Common local UDP discovery protocols.
+        if protocol == 'UDP' and (src_port in self.LOCAL_MULTICAST_UDP_PORTS or dst_port in self.LOCAL_MULTICAST_UDP_PORTS):
+            if src_obj.is_private or src_obj.is_link_local or src_obj.is_loopback:
+                if dst_obj.is_multicast or dst_obj.is_private or dst_obj.is_link_local:
+                    # Keep a sanity bound so extremely large bursts can still be analyzed.
+                    if packets < 20000 and bytes_val < 100_000_000:
+                        return True
 
         return False
 
@@ -301,27 +371,61 @@ class ThreatClassifier:
         features: Dict[str, float],
         risk_score: float
     ) -> Tuple[bool, float, str]:
-        """Detect DNS tunneling for C2 or exfiltration."""
+        """Detect DNS tunneling for C2 or exfiltration - Production-ready detector."""
         dst_port = flow.get('dst_port')
         protocol = flow.get('protocol', 'TCP')
         packets = flow.get('packets', 0)
         bytes_val = flow.get('bytes', 0)
         bytes_per_packet = features.get('bytes_per_packet', 0)
 
-        # DNS tunneling indicators:
-        # - Port 53 traffic
-        # - Unusually large DNS packets
-        # - High volume of DNS queries
+        # DNS tunneling indicators (TUNED FOR PRODUCTION):
+        # - Port 53 traffic with suspicious characteristics
+        # - Unusually large DNS packets (>512 bytes is suspicious for UDP)
+        # - Very high volume of DNS queries (>1000 in single flow)
+        # - TCP DNS (rare - usually only for zone transfers or tunneling)
 
-        if dst_port == 53 and protocol == 'UDP':
-            if bytes_per_packet > 300 or packets > 500:
-                confidence = 0.85
+        if dst_port == 53:
+            # TCP DNS is inherently suspicious (rarely used except for zone transfers)
+            if protocol == 'TCP' and bytes_val > 10000:
+                confidence = 0.90
                 reason = (
-                    f"DNS TUNNELING SUSPECTED: Abnormal DNS traffic detected with {int(packets)} queries "
-                    f"and average packet size of {bytes_per_packet:.0f} bytes. Normal DNS queries are much smaller. "
+                    f"DNS TUNNELING DETECTED: TCP-based DNS with {bytes_val:,} bytes. "
+                    f"TCP DNS is rarely used legitimately and is a strong indicator of tunneling. "
                     f"Attackers use DNS tunneling to bypass firewalls and exfiltrate data or establish covert C2 channels."
                 )
                 return (True, confidence, reason)
+            
+            # UDP DNS - only flag if SIGNIFICANTLY abnormal
+            if protocol == 'UDP':
+                is_suspicious = False
+                confidence = 0.0
+                reasons = []
+                
+                # Large average packet size (>512 bytes for UDP DNS is suspicious)
+                if bytes_per_packet > 512:
+                    is_suspicious = True
+                    confidence += 0.40
+                    reasons.append(f"{bytes_per_packet:.0f} bytes/packet (normal: <512)")
+                
+                # Extremely high query volume in single flow
+                if packets > 1500:
+                    is_suspicious = True
+                    confidence += 0.35
+                    reasons.append(f"{int(packets)} queries in single flow")
+                
+                # High total data transfer
+                if bytes_val > 500_000:  # >500KB of DNS data
+                    is_suspicious = True
+                    confidence += 0.30
+                    reasons.append(f"{bytes_val / 1000:.0f}KB total data")
+                
+                if is_suspicious and confidence >= 0.75:
+                    reason = (
+                        f"DNS TUNNELING SUSPECTED: Abnormal DNS traffic - "
+                        f"{', '.join(reasons)}. "
+                        f"This pattern is characteristic of DNS tunneling used for covert data exfiltration or C2 communications."
+                    )
+                    return (True, min(confidence, 0.92), reason)
 
         return (False, 0.0, "")
 
@@ -330,15 +434,17 @@ class ThreatClassifier:
         if not ip:
             return False
 
-        # Simple check for common private ranges
-        private_prefixes = [
-            '192.168.', '10.', '172.16.', '172.17.', '172.18.', '172.19.',
-            '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.',
-            '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.',
-            '127.', 'localhost', '::1'
-        ]
-
-        return any(ip.startswith(prefix) for prefix in private_prefixes)
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            return (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_multicast
+                or ip_obj.is_unspecified
+            )
+        except ValueError:
+            return ip.lower() == 'localhost'
 
     def get_threat_severity(self, threat_category: Optional[str], confidence: float) -> str:
         """Map threat category and confidence to severity level."""
