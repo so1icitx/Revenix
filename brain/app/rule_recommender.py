@@ -11,7 +11,7 @@ class RuleRecommender:
     """
 
     def __init__(self):
-        self.rule_confidence_threshold = 0.7
+        self.rule_confidence_threshold = 0.5  # Lower threshold for more rule suggestions
 
     def is_private_ip(self, ip: str) -> bool:
         """Check if IP is private/local (RFC1918, loopback, link-local)"""
@@ -26,16 +26,19 @@ class RuleRecommender:
         except ValueError:
             return False
 
-    def recommend_rules(self, flow: Dict, risk_score: float, reason: str) -> List[Dict]:
+    def recommend_rules(self, flow: Dict, risk_score: float, reason: str, dpi_context: Dict = None) -> List[Dict]:
         """
         Generate firewall rule recommendations for a threat.
+        Now includes DPI-based rule generation.
         Returns list of recommended rules with confidence scores.
         """
         rules = []
         src_ip = flow.get("src_ip", "")
         dst_ip = flow.get("dst_ip", "")
+        dpi_context = dpi_context or {}
 
-        if risk_score >= 0.8 and not self.is_private_ip(src_ip):
+        # BLOCK rules for high-risk external IPs (lowered threshold)
+        if risk_score >= 0.7 and not self.is_private_ip(src_ip):
             rules.append({
                 "rule_type": "block_ip",
                 "action": "BLOCK",
@@ -44,7 +47,8 @@ class RuleRecommender:
                 "confidence": min(risk_score, 1.0)
             })
 
-        if 0.6 <= risk_score < 0.8 and not self.is_private_ip(src_ip):
+        # RATE_LIMIT for medium-risk (lowered threshold)
+        if 0.5 <= risk_score < 0.7 and not self.is_private_ip(src_ip):
             rules.append({
                 "rule_type": "rate_limit",
                 "action": "RATE_LIMIT",
@@ -79,6 +83,48 @@ class RuleRecommender:
                 "target": src_ip,  # Use src_ip instead of protocol= string
                 "reason": f"Unusual protocol {protocol} with high risk from {src_ip}",
                 "confidence": 0.80
+            })
+
+        # NEW: DPI-based rule recommendations
+        if dpi_context:
+            dpi_type = dpi_context.get('type')
+            
+            # Malware C2 detection (JA3)
+            if dpi_context.get('is_malicious') or dpi_type == 'tls_fingerprint':
+                malware_name = dpi_context.get('malware_name')
+                if malware_name:
+                    rules.append({
+                        "rule_type": "block_malware_c2",
+                        "action": "BLOCK",
+                        "target": src_ip,
+                        "reason": f"Malware C2 detected: {malware_name} (JA3 fingerprint match)",
+                        "confidence": 0.98
+                    })
+            
+            # DNS Tunneling
+            if dpi_context.get('is_tunneling') or dpi_type == 'dns_analysis':
+                suspicion = dpi_context.get('suspicion_score', 0)
+                if suspicion >= 0.7:
+                    domain = dpi_context.get('domain', dst_ip)
+                    rules.append({
+                        "rule_type": "block_dns_tunneling",
+                        "action": "BLOCK",
+                        "target": src_ip,
+                        "reason": f"DNS tunneling detected to {domain} (entropy-based analysis)",
+                        "confidence": min(suspicion + 0.1, 0.99)
+                    })
+            
+            # SSH Brute Force
+            if dpi_context.get('is_brute_force') or dpi_type == 'ssh_brute_force':
+                threat_score = dpi_context.get('threat_score', 0)
+                if threat_score >= 0.7:
+                    failed_attempts = dpi_context.get('failed_attempts', 0)
+                    rules.append({
+                        "rule_type": "block_ssh_brute_force",
+                        "action": "BLOCK",
+                        "target": src_ip,
+                        "reason": f"SSH brute force attack: {failed_attempts} failed attempts",
+                        "confidence": min(threat_score + 0.15, 0.99)
             })
 
         high_confidence_rules = [
