@@ -1,15 +1,15 @@
+use anyhow::Result;
+use etherparse::{NetSlice, SlicedPacket, TransportSlice};
+use hostname;
+use pcap::Packet;
+use redis::Connection;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-use pcap::Packet;
-use serde::{Serialize, Deserialize};
 use uuid::Uuid;
-use anyhow::Result;
-use redis::Connection;
-use hostname;
-use etherparse::{SlicedPacket, TransportSlice, NetSlice};
 
-const FLOW_TIMEOUT: u64 = 30; // Flows expire after 30 seconds of inactivity
-const PUBLISH_INTERVAL: u64 = 30; // Publish all flows every 30 seconds
+const FLOW_TIMEOUT: u64 = 10; // Flows expire after 10 seconds of inactivity
+const PUBLISH_INTERVAL: u64 = 5; // Publish flows every 5 seconds for faster detection
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 struct FlowKey {
@@ -38,7 +38,7 @@ struct Flow {
 pub struct FlowAggregator {
     flows: HashMap<FlowKey, Flow>,
     packets_processed: u64,
-    last_publish: u64, // Track last publish time
+    last_publish: u64,              // Track last publish time
     redis_password: Option<String>, // Store Redis password for re-authentication
 }
 
@@ -55,11 +55,19 @@ impl FlowAggregator {
         }
     }
 
-    pub fn process_packet(&mut self, packet: &Packet, redis_conn: &mut Connection) -> Result<Option<String>> {
+    pub fn process_packet(
+        &mut self,
+        packet: &Packet,
+        redis_conn: &mut Connection,
+    ) -> Result<Option<String>> {
         self.packets_processed += 1;
 
         if self.packets_processed % 1000 == 0 {
-            println!("[Production] Processed {} packets, active flows: {}", self.packets_processed, self.flows.len());
+            println!(
+                "[Production] Processed {} packets, active flows: {}",
+                self.packets_processed,
+                self.flows.len()
+            );
         }
 
         let data = packet.data;
@@ -74,19 +82,22 @@ impl FlowAggregator {
                 let header = ipv4.header();
                 let src_arr = header.source();
                 let dst_arr = header.destination();
-                let src = format!("{}.{}.{}.{}",
-                                  src_arr[0], src_arr[1],
-                                  src_arr[2], src_arr[3]);
-                let dst = format!("{}.{}.{}.{}",
-                                  dst_arr[0], dst_arr[1],
-                                  dst_arr[2], dst_arr[3]);
+                let src = format!(
+                    "{}.{}.{}.{}",
+                    src_arr[0], src_arr[1], src_arr[2], src_arr[3]
+                );
+                let dst = format!(
+                    "{}.{}.{}.{}",
+                    dst_arr[0], dst_arr[1], dst_arr[2], dst_arr[3]
+                );
                 (src, dst, header.protocol().0)
-            },
+            }
             Some(NetSlice::Ipv6(ipv6)) => {
                 let header = ipv6.header();
                 let src_bytes = header.source();
                 let dst_bytes = header.destination();
-                let src = format!("{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+                let src = format!(
+                    "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
                                   u16::from_be_bytes([src_bytes[0], src_bytes[1]]),
                                   u16::from_be_bytes([src_bytes[2], src_bytes[3]]),
                                   u16::from_be_bytes([src_bytes[4], src_bytes[5]]),
@@ -94,8 +105,10 @@ impl FlowAggregator {
                                   u16::from_be_bytes([src_bytes[8], src_bytes[9]]),
                                   u16::from_be_bytes([src_bytes[10], src_bytes[11]]),
                                   u16::from_be_bytes([src_bytes[12], src_bytes[13]]),
-                                  u16::from_be_bytes([src_bytes[14], src_bytes[15]]));
-                let dst = format!("{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+                    u16::from_be_bytes([src_bytes[14], src_bytes[15]])
+                );
+                let dst = format!(
+                    "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
                                   u16::from_be_bytes([dst_bytes[0], dst_bytes[1]]),
                                   u16::from_be_bytes([dst_bytes[2], dst_bytes[3]]),
                                   u16::from_be_bytes([dst_bytes[4], dst_bytes[5]]),
@@ -103,19 +116,16 @@ impl FlowAggregator {
                                   u16::from_be_bytes([dst_bytes[8], dst_bytes[9]]),
                                   u16::from_be_bytes([dst_bytes[10], dst_bytes[11]]),
                                   u16::from_be_bytes([dst_bytes[12], dst_bytes[13]]),
-                                  u16::from_be_bytes([dst_bytes[14], dst_bytes[15]]));
+                    u16::from_be_bytes([dst_bytes[14], dst_bytes[15]])
+                );
                 (src, dst, header.next_header().0)
-            },
+            }
             None => return Ok(None),
         };
 
         let (src_port, dst_port, protocol_str) = match parsed.transport {
-            Some(TransportSlice::Tcp(tcp)) => {
-                (tcp.source_port(), tcp.destination_port(), "TCP")
-            },
-            Some(TransportSlice::Udp(udp)) => {
-                (udp.source_port(), udp.destination_port(), "UDP")
-            },
+            Some(TransportSlice::Tcp(tcp)) => (tcp.source_port(), tcp.destination_port(), "TCP"),
+            Some(TransportSlice::Udp(udp)) => (udp.source_port(), udp.destination_port(), "UDP"),
             Some(TransportSlice::Icmpv4(_)) => (0, 0, "ICMP"),
             Some(TransportSlice::Icmpv6(_)) => (0, 0, "ICMPV6"),
             None => {
@@ -141,8 +151,7 @@ impl FlowAggregator {
             protocol: protocol_str.to_string(),
         };
 
-        let flow = self.flows.entry(key.clone()).or_insert_with(|| {
-            Flow {
+        let flow = self.flows.entry(key.clone()).or_insert_with(|| Flow {
                 flow_id: Uuid::new_v4().to_string(),
                                                                 hostname: hostname::get()
                                                                 .unwrap_or_default()
@@ -157,29 +166,35 @@ impl FlowAggregator {
                                                                 packets: 0,
                                                                 start_ts: now,
                                                                 end_ts: now,
-            }
         });
 
         flow.bytes += packet_len;
         flow.packets += 1;
         flow.end_ts = now;
 
+        // Check if it's time to publish
         if now - self.last_publish >= PUBLISH_INTERVAL {
-            self.publish_all_flows(redis_conn)?;
+            let published_count = self.publish_all_flows(redis_conn)?;
             self.last_publish = now;
+
+            // Return flow summary when published
+            if published_count > 0 {
+                return Ok(Some(format!("Published {} flows", published_count)));
+            }
         }
 
         Ok(None)
     }
 
-    fn publish_all_flows(&self, redis_conn: &mut Connection) -> Result<()> {
+    fn publish_all_flows(&self, redis_conn: &mut Connection) -> Result<usize> {
         if self.flows.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         self.ensure_auth(redis_conn)?;
 
-        println!("[Production] Publishing {} active flows to Redis", self.flows.len());
+        let count = self.flows.len();
+        println!("[Production] Publishing {} active flows to Redis", count);
         for flow in self.flows.values() {
             let flow_json = serde_json::to_string(flow)?;
             redis::cmd("XADD")
@@ -189,7 +204,7 @@ impl FlowAggregator {
             .arg(&flow_json)
             .query::<String>(redis_conn)?;
         }
-        Ok(())
+        Ok(count)
     }
 
     pub fn check_timeouts(&mut self, redis_conn: &mut Connection) -> Result<()> {
@@ -217,7 +232,11 @@ impl FlowAggregator {
                 }
             }
 
-            println!("[Production] Cleaned {} expired flows ({}s timeout)", expired_keys.len(), FLOW_TIMEOUT);
+            println!(
+                "[Production] Cleaned {} expired flows ({}s timeout)",
+                expired_keys.len(),
+                FLOW_TIMEOUT
+            );
         }
 
         for key in expired_keys {
