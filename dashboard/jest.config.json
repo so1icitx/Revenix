@@ -1,0 +1,12 @@
+{
+  "testEnvironment": "jsdom",
+  "setupFilesAfterEnv": ["<rootDir>/jest.setup.ts"],
+  "testPathIgnorePatterns": ["<rootDir>/node_modules/", "<rootDir>/.next/"],
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/$1"
+  },
+  "transform": {
+    "^.+\\.(ts|tsx)$": ["ts-jest", { "tsconfig": "tsconfig.json" }]
+  },
+  "collectCoverageFrom": ["components/**/*.{ts,tsx}", "app/**/*.{ts,tsx}", "!**/*.d.ts"]
+}
