@@ -1,187 +1,314 @@
-'use client'
+"use client"
 
-import { useEffect, useState } from 'react'
-import { Shield, AlertTriangle } from 'lucide-react'
+import { API_URL } from '../../lib/api-config'
+import { useEffect, useState } from "react"
+import { Shield, XCircle, ChevronRight } from "lucide-react"
+import { formatSofiaDateTime } from "../../lib/time"
+import { ThreatAnalysis } from "../../components/threat-analysis"
 
-interface Alert {
-    id: number
-    hostname: string
-    risk_score: number
-    severity: string
-    reason: string
-    src_ip: string
-    dst_ip: string
-    threat_category?: string
-    timestamp: string
+const getSeverityColor = (severity: string): string => {
+  switch (severity?.toLowerCase()) {
+    case 'critical': return 'text-severity-critical'
+    case 'high': return 'text-severity-high'
+    case 'medium': return 'text-severity-medium'
+    case 'low': return 'text-severity-low'
+    default: return 'text-muted-foreground'
+  }
 }
 
+const getSeverityBorder = (severity: string): string => {
+  switch (severity?.toLowerCase()) {
+    case 'critical': return 'border-l-2 border-l-severity-critical'
+    case 'high': return 'border-l-2 border-l-severity-high'
+    case 'medium': return 'border-l-2 border-l-severity-medium'
+    case 'low': return 'border-l-2 border-l-severity-low'
+    default: return 'border-l-2 border-l-muted'
+  }
+}
+
+const getSeverityBg = (severity: string): string => {
+  switch (severity?.toLowerCase()) {
+    case 'critical': return 'bg-severity-critical/10'
+    case 'high': return 'bg-severity-high/10'
+    case 'medium': return 'bg-severity-medium/10'
+    case 'low': return 'bg-severity-low/10'
+    default: return 'bg-muted'
+  }
+}
+
+interface Alert {
+  id: number
+  hostname: string
+  risk_score: number
+  severity: string
+  reason: string
+  src_ip: string
+  dst_ip: string
+  src_port?: number
+  dst_port?: number
+  protocol?: string
+  threat_category?: string
+  timestamp?: number | string
+  created_at?: string
+}
+
+const timeRanges = [
+  { label: "15m", minutes: 15 },
+  { label: "1h", minutes: 60 },
+  { label: "6h", minutes: 360 },
+  { label: "24h", minutes: 1440 },
+  { label: "All", minutes: null },
+]
+
+const severityFilters = ["all", "critical", "high", "medium", "low"]
+
 export default function ThreatsPage() {
-    const [alerts, setAlerts] = useState<Alert[]>([])
-    const [expandedAlert, setExpandedAlert] = useState<number | null>(null)
+  const [alerts, setAlerts] = useState<Alert[]>([])
+  const [blockingIP, setBlockingIP] = useState<string | null>(null)
+  const [blockStatus, setBlockStatus] = useState<{ [key: string]: "success" | "error" | null }>({})
+  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null)
+  const [severityFilter, setSeverityFilter] = useState<string>("all")
+  const [timeFilter, setTimeFilter] = useState(timeRanges[2])
+  const [searchQuery, setSearchQuery] = useState("")
 
-    useEffect(() => {
-        const fetchAlerts = async () => {
-            try {
-                const response = await fetch('http://localhost:8000/alerts/recent')
-                if (!response.ok) throw new Error('Failed to fetch')
-                    const data = await response.json()
-                    setAlerts(data)
-            } catch (error) {
-                console.error('[v0] Fetch error:', error)
-            }
-        }
-
-        fetchAlerts()
-        const interval = setInterval(fetchAlerts, 5000)
-        return () => clearInterval(interval)
-    }, [])
-
-    const getSeverityColor = (severity: string) => {
-        switch (severity.toLowerCase()) {
-            case 'critical': return 'bg-[#ff4444]'
-            case 'high': return 'bg-orange-500'
-            case 'medium': return 'bg-yellow-500'
-            case 'low': return 'bg-blue-500'
-            default: return 'bg-gray-500'
-        }
+  useEffect(() => {
+    const fetchAlerts = async () => {
+      try {
+        const response = await fetch(`${API_URL}/alerts/recent`)
+        if (!response.ok) throw new Error("Failed to fetch")
+        setAlerts(await response.json())
+      } catch (error) {
+        console.error("[Threats] Fetch error:", error)
+      }
     }
+    fetchAlerts()
+    const interval = setInterval(fetchAlerts, 5000)
+    return () => clearInterval(interval)
+  }, [])
 
-    const formatDate = (timestamp: string) => {
-        try {
-            let date: Date
+  const filteredAlerts = alerts.filter((alert) => {
+    const severityMatch = severityFilter === "all" || alert.severity?.toLowerCase() === severityFilter
+    const search = searchQuery.toLowerCase()
+    const matchesSearch = !search || [alert.hostname, alert.src_ip, alert.reason, alert.threat_category].some((f) => f?.toLowerCase().includes(search))
+    const timestampSeconds = (() => {
+      const raw = alert.timestamp ?? alert.created_at ?? ""
+      if (typeof raw === "number") return raw
+      const date = Date.parse(String(raw))
+      return isNaN(date) ? 0 : date / 1000
+    })()
+    const minutes = timeFilter.minutes
+    const matchesTime = minutes === null || Date.now() / 1000 - timestampSeconds <= minutes * 60
+    return severityMatch && matchesSearch && matchesTime
+  })
 
-            if (/^\d+(\.\d+)?$/.test(timestamp)) {
-                date = new Date(parseFloat(timestamp) * 1000)
-            } else {
-                date = new Date(timestamp)
-            }
-
-            if (isNaN(date.getTime())) {
-                console.error('[v0] Invalid timestamp:', timestamp)
-                return 'Invalid date'
-            }
-
-            return date.toLocaleString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: true
-            })
-        } catch (error) {
-            console.error('[v0] Date formatting error:', error, 'for timestamp:', timestamp)
-            return 'Invalid date'
-        }
+  const handleBlockIP = async (ip: string, alertId: number) => {
+    setBlockingIP(ip)
+    try {
+      const response = await fetch(`${API_URL}/policies/block`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip, block_reason: `Manually blocked from threat alert #${alertId}`, confidence: 1.0, expires_hours: 24, threat_category: "MANUAL_BLOCK", manual_override: true }),
+      })
+      if (response.ok) {
+        setBlockStatus({ ...blockStatus, [ip]: "success" })
+        setTimeout(() => setBlockStatus({ ...blockStatus, [ip]: null }), 3000)
+      } else {
+        setBlockStatus({ ...blockStatus, [ip]: "error" })
+      }
+    } catch (error) {
+      setBlockStatus({ ...blockStatus, [ip]: "error" })
+    } finally {
+      setBlockingIP(null)
     }
+  }
 
-    return (
-        <div className="p-8 animate-fadeIn">
-        <div className="mb-8">
-        <div className="flex items-center gap-4 mb-4">
-        <div className="w-12 h-12 bg-[#ff4444]/10 rounded-lg flex items-center justify-center">
-        <Shield className="w-6 h-6 text-[#ff4444]" />
+  return (
+    <div className="p-6 space-y-5 animate-fadeIn">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 bg-card rounded-xl flex items-center justify-center border border-border">
+          <Shield className="w-5 h-5 text-primary" />
         </div>
         <div>
-        <h1 className="text-3xl font-bold">Threat Detection</h1>
-        <p className="text-gray-500">AI-identified security threats and anomalies</p>
+          <h1 className="text-2xl font-semibold text-foreground">Threat Detection</h1>
+          <p className="text-sm text-muted-foreground">AI-powered security threat analysis</p>
         </div>
-        </div>
-        </div>
+      </div>
 
-        {/* Threat Stats */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
-        {['critical', 'high', 'medium', 'low'].map(severity => {
-            const count = alerts.filter(a => a.severity === severity).length
-            return (
-                <div key={severity} className="bg-gradient-to-br from-gray-900/50 to-gray-900/30 border border-gray-800 rounded-xl p-4">
-                <div className="flex items-center justify-between">
-                <div>
-                <p className="text-sm text-gray-500 capitalize">{severity}</p>
-                <p className="text-2xl font-bold">{count}</p>
-                </div>
-                <div className={`w-3 h-3 rounded-full ${getSeverityColor(severity)}`}></div>
-                </div>
-                </div>
-            )
+      {/* Severity Stats */}
+      <div className="grid grid-cols-4 gap-3">
+        {(["critical", "high", "medium", "low"] as const).map((severity) => {
+          const count = alerts.filter((a) => a.severity?.toLowerCase() === severity).length
+          return (
+            <div key={severity} className={`card-surface p-4 ${getSeverityBorder(severity)}`}>
+              <p className="text-xs text-muted-foreground capitalize mb-1">{severity}</p>
+              <p className={`text-2xl font-semibold ${getSeverityColor(severity)}`}>{count}</p>
+            </div>
+          )
         })}
-        </div>
+      </div>
 
-        {/* Threats Table */}
-        <div className="bg-gradient-to-br from-gray-900/50 to-gray-900/30 border border-gray-800 rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-        <table className="w-full">
-        <thead className="bg-gray-900 border-b border-gray-800">
-        <tr>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Severity</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Risk</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Device</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Source</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">AI Analysis</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
-        </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-800">
-        {alerts.map((alert) => (
-            <>
-            <tr
-            key={alert.id}
-            className="hover:bg-gray-900/50 transition-colors cursor-pointer"
-            onClick={() => setExpandedAlert(expandedAlert === alert.id ? null : alert.id)}
-            >
-            <td className="px-4 py-3">
-            <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${getSeverityColor(alert.severity)} text-white`}>
-            {alert.severity}
-            </span>
-            </td>
-            <td className="px-4 py-3 text-sm">
-            {alert.threat_category && (
-                <span className="px-2 py-1 bg-gray-800 rounded text-xs text-gray-400">
-                {alert.threat_category.replace(/_/g, ' ').toUpperCase()}
-                </span>
-            )}
-            </td>
-            <td className="px-4 py-3">
-            <div className="flex items-center gap-2">
-            <div className="w-16 bg-gray-800 rounded-full h-1.5">
-            <div
-            className="h-1.5 rounded-full bg-gradient-to-r from-yellow-500 to-[#ff4444]"
-            style={{ width: `${alert.risk_score * 100}%` }}
+      {/* Filters */}
+      <div className="card-surface p-4">
+        <div className="flex flex-wrap gap-5 items-center">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Severity</span>
+            <div className="flex gap-1">
+              {severityFilters.map((sev) => (
+                <button
+                  key={sev}
+                  onClick={() => setSeverityFilter(sev)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    severityFilter === sev
+                      ? 'bg-primary/15 text-primary border border-primary/30'
+                      : 'bg-muted text-muted-foreground border border-border hover:border-border-hover'
+                  }`}
+                >
+                  {sev.charAt(0).toUpperCase() + sev.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Time</span>
+            <div className="flex gap-1">
+              {timeRanges.map((range) => (
+                <button
+                  key={range.label}
+                  onClick={() => setTimeFilter(range)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    timeFilter.label === range.label
+                      ? 'bg-primary/15 text-primary border border-primary/30'
+                      : 'bg-muted text-muted-foreground border border-border hover:border-border-hover'
+                  }`}
+                >
+                  {range.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <input
+              type="text"
+              placeholder="Search threats..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full px-4 py-2 bg-muted border border-border rounded-lg text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
             />
-            </div>
-            <span className="text-xs text-gray-400">{(alert.risk_score * 100).toFixed(0)}%</span>
-            </div>
-            </td>
-            <td className="px-4 py-3 text-sm text-[#00eaff] font-medium">{alert.hostname}</td>
-            <td className="px-4 py-3 text-sm font-mono text-gray-400">{alert.src_ip}</td>
-            <td className="px-4 py-3 text-sm text-gray-300 max-w-md">
-            <div className="flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-yellow-500 mt-0.5 flex-shrink-0" />
-            <p className="line-clamp-2">{alert.reason}</p>
-            </div>
-            </td>
-            <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
-            {formatDate(alert.timestamp)}
-            </td>
-            </tr>
-            {expandedAlert === alert.id && (
-                <tr key={`${alert.id}-expanded`} className="bg-gray-900/30">
-                <td colSpan={7} className="px-4 py-4">
-                <div className="space-y-3">
-                <h4 className="text-sm font-semibold text-white">Complete Threat Analysis</h4>
-                <p className="text-sm text-gray-400 leading-relaxed">{alert.reason}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Threats List */}
+      <div className="space-y-2">
+        {filteredAlerts.length === 0 ? (
+          <div className="card-surface p-12 text-center">
+            <Shield className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+            <p className="text-muted-foreground text-sm">No threats detected in the selected time range</p>
+          </div>
+        ) : (
+          filteredAlerts.map((alert) => {
+            const blockState = blockStatus[alert.src_ip]
+            return (
+              <div
+                key={alert.id}
+                className={`card-surface-hover ${getSeverityBorder(alert.severity)} p-4 cursor-pointer`}
+                onClick={() => setSelectedAlert(alert)}
+              >
+                <div className="flex items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2.5 mb-1">
+                      <span className={`text-xs font-semibold uppercase ${getSeverityColor(alert.severity)}`}>{alert.severity}</span>
+                      <span className="text-xs text-muted-foreground">{(alert.risk_score * 100).toFixed(0)}% risk</span>
+                      {alert.threat_category && (
+                        <span className="text-[10px] px-2 py-0.5 bg-muted rounded text-muted-foreground">{alert.threat_category.replace(/_/g, " ")}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-mono text-primary">{alert.src_ip}</span>
+                      <span className="text-muted-foreground">{">"}</span>
+                      <span className="font-mono text-muted-foreground">{alert.dst_ip}</span>
+                      {alert.protocol && <span className="text-[10px] px-1.5 py-0.5 bg-muted/50 rounded text-muted-foreground ml-1">{alert.protocol}</span>}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[11px] text-muted-foreground">{formatSofiaDateTime(alert.timestamp ?? alert.created_at ?? "")}</p>
+                    <p className="text-[11px] text-muted-foreground">{alert.hostname}</p>
+                  </div>
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    {blockState === "success" ? (
+                      <span className="text-safe text-xs px-3 py-1.5 font-medium">Blocked</span>
+                    ) : blockState === "error" ? (
+                      <span className="text-danger text-xs px-3 py-1.5">Failed</span>
+                    ) : (
+                      <button
+                        onClick={() => handleBlockIP(alert.src_ip, alert.id)}
+                        disabled={blockingIP === alert.src_ip}
+                        className="px-3 py-1.5 bg-danger/10 hover:bg-danger/20 text-danger text-xs rounded-lg transition border border-danger/20 disabled:opacity-50 font-medium"
+                      >
+                        {blockingIP === alert.src_ip ? "..." : "Block"}
+                      </button>
+                    )}
+                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                  </div>
                 </div>
-                </td>
-                </tr>
-            )}
-            </>
-        ))}
-        </tbody>
-        </table>
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      {/* Detail Modal */}
+      {selectedAlert && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setSelectedAlert(null)}>
+          <div className="bg-card border border-border rounded-xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col animate-fadeIn" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-5 border-b border-border">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-muted">
+                  <Shield className="w-4 h-4 text-primary" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-foreground">Threat Analysis</h2>
+                  <p className="text-xs text-muted-foreground">Alert #{selectedAlert.id}</p>
+                </div>
+              </div>
+              <button onClick={() => setSelectedAlert(null)} className="p-1.5 hover:bg-muted rounded-lg transition">
+                <XCircle className="w-4 h-4 text-muted-foreground" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <ThreatAnalysis
+                reason={selectedAlert.reason}
+                srcIp={selectedAlert.src_ip}
+                dstIp={selectedAlert.dst_ip}
+                protocol={selectedAlert.protocol}
+                srcPort={selectedAlert.src_port}
+                dstPort={selectedAlert.dst_port}
+                riskScore={selectedAlert.risk_score}
+                severity={selectedAlert.severity}
+                threatCategory={selectedAlert.threat_category}
+              />
+            </div>
+            <div className="p-4 border-t border-border flex justify-between items-center">
+              <p className="text-[11px] text-muted-foreground">
+                Detected: {formatSofiaDateTime(selectedAlert.timestamp ?? selectedAlert.created_at ?? "")}
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => setSelectedAlert(null)} className="px-4 py-2 bg-muted hover:bg-border text-foreground text-sm rounded-lg transition font-medium">Close</button>
+                {blockStatus[selectedAlert.src_ip] !== "success" && (
+                  <button
+                    onClick={() => handleBlockIP(selectedAlert.src_ip, selectedAlert.id)}
+                    disabled={blockingIP === selectedAlert.src_ip}
+                    className="px-4 py-2 bg-danger hover:bg-danger/90 text-white text-sm rounded-lg transition disabled:opacity-50 font-medium"
+                  >
+                    {blockingIP === selectedAlert.src_ip ? "Blocking..." : "Block IP"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
-        </div>
-        </div>
-    )
+      )}
+    </div>
+  )
 }
