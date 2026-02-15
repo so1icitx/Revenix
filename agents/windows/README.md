@@ -1,22 +1,17 @@
 # Revenix Windows Agent
 
-This folder contains the Windows deployment wrapper for `revenix-core.exe`.
+> Recommended install path: run `install.cmd` (bootstrap) as Administrator. It handles prerequisites and task setup automatically.
 
-## What this does
+## What Bootstrap Handles
 
-- Reads endpoint config from `agent.env`
-- Checks whether Npcap is installed
-- Silently installs Npcap from bundled installer when needed
-- Auto-selects the active NIC if `NETWORK_INTERFACE` is blank
-- Installs/starts the startup scheduled task (`RevenixCoreAgent`)
+- Reads config from `agent.env`
+- Verifies Administrator context (and requests elevation)
+- Installs Npcap silently if missing (from bundled installer)
+- Installs VC++ runtime if missing (bundled or auto-download)
+- Auto-selects a capture interface when `NETWORK_INTERFACE` is empty
+- Installs and starts scheduled task `RevenixCoreAgent`
 
-## Prerequisites
-
-- Windows Server 2019+ or Windows 10/11
-- Administrator PowerShell
-- `revenix-core.exe` built for Windows (`x86_64-pc-windows-msvc`)
-
-## Package layout
+## Package Contents
 
 Expected files in one folder:
 
@@ -24,60 +19,76 @@ Expected files in one folder:
 - `install.cmd`
 - `bootstrap-install.ps1`
 - `install-agent.ps1`
-- `uninstall.cmd`
 - `start-agent.ps1`
+- `uninstall.cmd`
 - `uninstall-agent.ps1`
-- `agent.env` (copy from `agent.env.example`)
-- Optional offline installer: `dependencies\npcap-installer.exe`
-- Optional offline installer: `dependencies\vc_redist.x64.exe`
+- `agent.env` (create from `agent.env.example`)
+- Optional: `dependencies\npcap-installer.exe`
+- Optional: `dependencies\vc_redist.x64.exe`
 
-## One-command install (recommended)
+## Configure `agent.env`
 
-1. Copy `agent.env.example` to `agent.env` and set:
-   - `API_URL=http://YOUR-MAIN-SERVER:8000`
-   - `REDIS_URL=redis://YOUR-MAIN-SERVER:6379`
-2. (Optional but recommended) Place Npcap installer at:
-   - `dependencies\npcap-installer.exe`
-3. (Optional) Place VC++ runtime installer at:
-   - `dependencies\vc_redist.x64.exe`
-   - If missing, bootstrap tries to download it from Microsoft.
-4. Run as Administrator:
+1. Copy `agent.env.example` to `agent.env`.
+2. Set at minimum:
+- `API_URL=http://YOUR-MAIN-SERVER:8000`
+- `REDIS_URL=redis://YOUR-MAIN-SERVER:6379`
+
+> Leave `NETWORK_INTERFACE=` empty unless you must pin one NIC.
+
+## Install (Recommended)
+
+Open an **Administrator PowerShell** in this folder, then run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force
 .\install.cmd
 ```
 
-Optional overrides:
+Direct equivalent:
 
 ```powershell
-.\install.cmd `
-  -ApiUrl "http://YOUR-MAIN-SERVER:8000" `
-  -RedisUrl "redis://YOUR-MAIN-SERVER:6379" `
-  -NetworkInterface "Ethernet" `
-  -NpcapInstallerPath ".\dependencies\npcap-installer.exe"
+.\bootstrap-install.ps1
 ```
 
-## Manual install (advanced)
-
-If you already have Npcap installed:
+## Verify Agent Health
 
 ```powershell
-.\install-agent.ps1 `
-  -BinaryPath ".\revenix-core.exe" `
-  -ApiUrl "http://YOUR-MAIN-SERVER:8000" `
-  -RedisUrl "redis://YOUR-MAIN-SERVER:6379"
+Get-ScheduledTask -TaskName RevenixCoreAgent
+Get-ScheduledTaskInfo -TaskName RevenixCoreAgent
+Get-Content "C:\ProgramData\RevenixAgent\logs\agent-supervisor.log" -Tail 50
 ```
 
-## Files created
+Expected:
 
-- `C:\ProgramData\RevenixAgent\revenix-core.exe`
-- `C:\ProgramData\RevenixAgent\start-agent.ps1`
-- `C:\ProgramData\RevenixAgent\agent.env`
-- Scheduled task: `RevenixCoreAgent`
+- Task exists as `RevenixCoreAgent`
+- Last task result is `0`
+- Supervisor log shows `Starting revenix-core.exe`
+
+> `Task Manager` is not the source of truth for startup services. Use scheduled task status and logs.
+
+## Update / Reinstall
+
+Run install again with the new bundle:
+
+```powershell
+.\install.cmd
+```
+
+The installer replaces files and re-registers the task.
 
 ## Uninstall
 
 ```powershell
 .\uninstall.cmd
 ```
+
+## Common Issues
+
+- `Run this script as Administrator.`
+  - Re-open PowerShell with `Run as administrator`.
+- `Elevation was canceled or failed.`
+  - Accept UAC prompt, then rerun.
+- `Npcap is missing...`
+  - Put installer at `dependencies\npcap-installer.exe` for fully offline install.
+
+More diagnostics: `docs/troubleshooting.md`.

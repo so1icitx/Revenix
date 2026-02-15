@@ -1,1 +1,6 @@
 site_name: Revenix Docs
+docs_dir: .
+nav:
+  - Overview: index.md
+  - Windows Agent: windows-agent.md
+  - Troubleshooting: troubleshooting.md
