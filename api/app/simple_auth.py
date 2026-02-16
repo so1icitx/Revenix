@@ -67,32 +67,36 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
 
 async def create_user(session, user: SimpleUser):
-    """Create a new user with hashed password"""
+    """Create the first admin user. Returns None when signup is locked."""
     try:
-        # Hash the password
         password_hash = hash_password(user.password)
-        
+
+        # Atomic first-user signup: only inserts when users table is empty.
         result = await session.execute(
             text("""
                 INSERT INTO users (username, password_hash, full_name, email, role, is_active)
-                VALUES (:username, :password, :full_name, :email, 'admin', TRUE)
+                SELECT :username, :password, :full_name, :email, 'admin', TRUE
+                WHERE NOT EXISTS (SELECT 1 FROM users)
                 RETURNING id, username, email, full_name, role
             """),
             {
                 "username": user.username,
-                "password": password_hash,  # SECURE: Hashed password
+                "password": password_hash,
                 "full_name": user.full_name,
-                "email": user.email
-            }
+                "email": user.email,
+            },
         )
         await session.commit()
         new_user = result.fetchone()
+        if not new_user:
+            return None
+
         return {
             "id": new_user[0],
             "username": new_user[1],
             "email": new_user[2],
             "full_name": new_user[3],
-            "role": new_user[4]
+            "role": new_user[4],
         }
     except Exception as e:
         await session.rollback()

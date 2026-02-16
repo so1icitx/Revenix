@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from sqlalchemy.ext.asyncio import AsyncSession
 from db import get_session
 from pydantic import BaseModel, validator, constr
@@ -13,7 +13,7 @@ import httpx
 import subprocess
 import platform
 import json
-from typing import Optional # Import Optional
+from typing import Optional, Any
 import aiohttp # Import aiohttp
 
 from app.simple_auth import SimpleUser, SimpleLogin, check_user_count, create_user, verify_user, create_access_token, decode_access_token
@@ -152,6 +152,83 @@ async def get_model_config_value(session: AsyncSession, key: str, default, cast_
         print(f"[Config] Failed to fetch config '{key}': {exc}")
         return default
 
+
+def _flow_row_to_dict(row: Any) -> dict:
+    """Serialize a flows row to dashboard-friendly JSON."""
+    return {
+        "id": row[0],
+        "flow_id": row[1],
+        "hostname": row[2],
+        "src_ip": row[3],
+        "dst_ip": row[4],
+        "src_port": row[5],
+        "dst_port": row[6],
+        "protocol": row[7],
+        "bytes": row[8],
+        "packets": row[9],
+        "start_ts": row[10],
+        "end_ts": row[11],
+        "timestamp": row[12].isoformat() if row[12] else None,
+        "verified_benign": row[13],
+        "analyzed_at": row[14].isoformat() if row[14] else None,
+        "analysis_version": row[15],
+        "training_excluded": row[16],
+        "flow_count": row[17],
+        "last_seen": row[18].isoformat() if row[18] else None,
+    }
+
+
+def _is_ip_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+async def _ensure_alerting_schema(session: AsyncSession) -> None:
+    """Ensure alerting tables/indexes exist for upgraded installs with old DB volumes."""
+    await session.execute(
+        text("""
+            CREATE TABLE IF NOT EXISTS alerting_webhooks (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                url TEXT NOT NULL,
+                type VARCHAR(50) NOT NULL DEFAULT 'webhook',
+                enabled BOOLEAN DEFAULT TRUE,
+                events JSONB DEFAULT '["critical", "high"]',
+                headers JSONB DEFAULT '{}',
+                last_triggered_at TIMESTAMP,
+                trigger_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+    )
+    await session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_alerting_webhooks_enabled ON alerting_webhooks(enabled) WHERE enabled = TRUE")
+    )
+    await session.execute(
+        text("""
+            CREATE TABLE IF NOT EXISTS alert_notifications (
+                id SERIAL PRIMARY KEY,
+                alert_id INTEGER REFERENCES alerts(id),
+                webhook_id INTEGER REFERENCES alerting_webhooks(id),
+                status VARCHAR(20) NOT NULL,
+                response_code INTEGER,
+                error_message TEXT,
+                sent_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+    )
+    await session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_alert_notifications_alert ON alert_notifications(alert_id)")
+    )
+    await session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_alert_notifications_sent ON alert_notifications(sent_at DESC)")
+    )
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global consumer_task
@@ -172,6 +249,7 @@ async def lifespan(app: FastAPI):
         await session.execute(
             text("CREATE INDEX IF NOT EXISTS idx_agents_ip ON agents(ip)")
         )
+        await _ensure_alerting_schema(session)
         await session.commit()
         await learning_state.init_from_db(session)
     finally:
@@ -186,6 +264,7 @@ async def lifespan(app: FastAPI):
         consumer_task.cancel()
 
 from app.websocket_broadcast import socket_app, broadcast_alert, broadcast_flow, broadcast_rule, get_stats as ws_get_stats
+from app.alerting_dispatch import dispatch_alert_notifications, send_alert_to_webhook, create_test_alert_payload
 
 app = FastAPI(lifespan=lifespan)
 
@@ -255,6 +334,11 @@ class AlertCreate(BaseModel):
             raise ValueError('Risk score must be between 0 and 1')
         return v
 
+
+class AlertDeleteBatch(BaseModel):
+    alert_ids: list[int]
+
+
 class RuleCreate(BaseModel):
     alert_id: int
     rule_type: constr(min_length=1, max_length=100)  # type: ignore
@@ -282,6 +366,16 @@ class RuleCreate(BaseModel):
         # Basic sanitation - ensure it's not empty and reasonable length
         if not v or len(v) > 500:
             raise ValueError('Target must be non-empty and less than 500 characters')
+        return v
+
+
+class RuleApplyRequest(BaseModel):
+    expires_hours: int = 24
+
+    @validator("expires_hours")
+    def validate_expires_hours(cls, v):
+        if v < 1 or v > 24 * 30:
+            raise ValueError("expires_hours must be between 1 and 720")
         return v
 
 
@@ -343,9 +437,17 @@ async def signup(user: SimpleUser, session: AsyncSession = Depends(get_session))
         # Check if users already exist
         count = await check_user_count(session)
         if count > 0:
-            raise HTTPException(status_code=400, detail="Users already exist. Please login.")
+            raise HTTPException(
+                status_code=403,
+                detail="Signup is disabled after initial setup. Please login.",
+            )
         
         new_user = await create_user(session, user)
+        if not new_user:
+            raise HTTPException(
+                status_code=403,
+                detail="Signup is disabled after initial setup. Please login.",
+            )
         
         # Create JWT token
         access_token = create_access_token(data={"sub": new_user["username"], "user_id": new_user["id"]})
@@ -427,10 +529,21 @@ async def get_devices(session: AsyncSession = Depends(get_session)):
     return devices
 
 @app.get("/flows/recent")
-async def get_recent_flows(session: AsyncSession = Depends(get_session)):
-    """Get flows from the last 24 hours (limited by dynamic config)."""
+async def get_recent_flows(
+    limit: int = Query(default=250, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get flows from the last 24 hours with capped pagination."""
     try:
-        max_flows = await get_model_config_value(session, "max_flows_stored", 1000, "integer")
+        configured_cap = await get_model_config_value(session, "max_flows_stored", 1000, "integer")
+        max_flows = max(1, int(configured_cap))
+
+        if offset >= max_flows:
+            return []
+
+        effective_limit = min(limit, max_flows - offset)
+
         result = await session.execute(
             text("""
                 SELECT id, flow_id, hostname, src_ip, dst_ip, src_port, dst_port,
@@ -439,38 +552,14 @@ async def get_recent_flows(session: AsyncSession = Depends(get_session)):
                        flow_count, last_seen
                 FROM flows
                 WHERE timestamp > NOW() - INTERVAL '24 hours'
-                ORDER BY end_ts DESC
+                ORDER BY end_ts DESC, id DESC
                 LIMIT :limit
+                OFFSET :offset
             """),
-            {"limit": max_flows}
+            {"limit": effective_limit, "offset": offset}
         )
         rows = result.fetchall()
-
-        flows = []
-        for row in rows:
-            flows.append({
-                "id": row[0],
-                "flow_id": row[1],
-                "hostname": row[2],
-                "src_ip": row[3],
-                "dst_ip": row[4],
-                "src_port": row[5],
-                "dst_port": row[6],
-                "protocol": row[7],
-                "bytes": row[8],
-                "packets": row[9],
-                "start_ts": row[10],
-                "end_ts": row[11],
-                "timestamp": row[12].isoformat() if row[12] else None,
-                "verified_benign": row[13],
-                "analyzed_at": row[14].isoformat() if row[14] else None,
-                "analysis_version": row[15],
-                "training_excluded": row[16],
-                "flow_count": row[17],  # Added flow_count
-                "last_seen": row[18].isoformat() if row[18] else None,  # Added last_seen
-            })
-
-        return flows
+        return [_flow_row_to_dict(row) for row in rows]
     except Exception as e:
         print(f"Error fetching flows: {e}")
         return []
@@ -587,6 +676,67 @@ async def get_flow_counts_by_device(session: AsyncSession = Depends(get_session)
         print(f"Error fetching flow counts: {e}")
         return {}
 
+
+@app.get("/flows/live-stats")
+async def get_live_flow_stats(
+    window_seconds: int = Query(default=30, ge=5, le=3600),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get uncapped flow statistics for live dashboards."""
+    try:
+        now_epoch = int(time.time())
+        window_start = now_epoch - int(window_seconds)
+
+        result = await session.execute(
+            text("""
+                WITH recent AS (
+                    SELECT
+                        COUNT(*) AS active_flows,
+                        COALESCE(SUM(packets), 0) AS total_packets,
+                        COALESCE(SUM(bytes), 0) AS total_bytes
+                    FROM flows
+                    WHERE end_ts >= :window_start
+                ),
+                totals AS (
+                    SELECT COUNT(*) AS total_flows
+                    FROM flows
+                )
+                SELECT
+                    totals.total_flows,
+                    recent.active_flows,
+                    ROUND(recent.total_packets::numeric / :window_seconds)::BIGINT AS packets_per_sec,
+                    ROUND(recent.total_bytes::numeric / :window_seconds)::BIGINT AS bytes_per_sec
+                FROM totals, recent
+            """),
+            {"window_start": window_start, "window_seconds": window_seconds},
+        )
+        row = result.fetchone()
+        if not row:
+            return {
+                "window_seconds": window_seconds,
+                "total_flows": 0,
+                "active_flows": 0,
+                "packets_per_sec": 0,
+                "bytes_per_sec": 0,
+            }
+
+        return {
+            "window_seconds": window_seconds,
+            "total_flows": int(row[0] or 0),
+            "active_flows": int(row[1] or 0),
+            "packets_per_sec": int(row[2] or 0),
+            "bytes_per_sec": int(row[3] or 0),
+        }
+    except Exception as e:
+        print(f"Error fetching live flow stats: {e}")
+        return {
+            "window_seconds": window_seconds,
+            "total_flows": 0,
+            "active_flows": 0,
+            "packets_per_sec": 0,
+            "bytes_per_sec": 0,
+        }
+
 @app.get("/devices/profiles")
 async def get_device_profiles_proxy():
     """Proxy endpoint to get device profiles from Brain API without auth."""
@@ -605,8 +755,12 @@ async def get_device_profiles_proxy():
         return {"profiles": [], "total_devices": 0, "totalFlows": 0}
 
 @app.get("/flows")
-async def get_all_flows(session: AsyncSession = Depends(get_session)):
-    """Get all flows with pagination"""
+async def get_all_flows(
+    limit: int = Query(default=250, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get all flows with pagination."""
     try:
         result = await session.execute(
             text("""
@@ -615,37 +769,14 @@ async def get_all_flows(session: AsyncSession = Depends(get_session)):
                        verified_benign, analyzed_at, analysis_version, training_excluded,
                        flow_count, last_seen
                 FROM flows
-                ORDER BY timestamp DESC
-                LIMIT 100
-            """)
+                ORDER BY timestamp DESC, id DESC
+                LIMIT :limit
+                OFFSET :offset
+            """),
+            {"limit": limit, "offset": offset}
         )
         rows = result.fetchall()
-
-        flows = []
-        for row in rows:
-            flows.append({
-                "id": row[0],
-                "flow_id": row[1],
-                "hostname": row[2],
-                "src_ip": row[3],
-                "dst_ip": row[4],
-                "src_port": row[5],
-                "dst_port": row[6],
-                "protocol": row[7],
-                "bytes": row[8],
-                "packets": row[9],
-                "start_ts": row[10],
-                "end_ts": row[11],
-                "timestamp": row[12].isoformat() if row[12] else None,
-                "verified_benign": row[13],
-                "analyzed_at": row[14].isoformat() if row[14] else None,
-                "analysis_version": row[15],
-                "training_excluded": row[16],
-                "flow_count": row[17],  # Added flow_count
-                "last_seen": row[18].isoformat() if row[18] else None,  # Added last_seen
-            })
-
-        return flows
+        return [_flow_row_to_dict(row) for row in rows]
     except Exception as e:
         print(f"Error fetching flows: {e}")
         import traceback
@@ -689,8 +820,11 @@ async def exclude_flow_from_training(flow_id: int, session: AsyncSession = Depen
         return {"status": "error", "message": str(e)}
 
 @app.get("/alerts/recent")
-async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
-    """Get the most recent alerts"""
+async def get_recent_alerts(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get recent alerts with configurable limit."""
     try:
         result = await session.execute(
             text("""
@@ -699,8 +833,9 @@ async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
                        EXTRACT(EPOCH FROM timestamp) as timestamp_epoch
                 FROM alerts
                 ORDER BY timestamp DESC
-                LIMIT 100
-            """)
+                LIMIT :limit
+            """),
+            {"limit": limit}
         )
         rows = result.fetchall()
 
@@ -728,6 +863,46 @@ async def get_recent_alerts(session: AsyncSession = Depends(get_session)):
         import traceback
         traceback.print_exc()
         return []
+
+
+@app.delete("/alerts/{alert_id}")
+async def delete_alert(alert_id: int, session: AsyncSession = Depends(get_session)):
+    """Delete a single alert by ID."""
+    try:
+        result = await session.execute(
+            text("DELETE FROM alerts WHERE id = :alert_id RETURNING id"),
+            {"alert_id": alert_id},
+        )
+        row = result.fetchone()
+        if not row:
+            return {"status": "not_found", "alert_id": alert_id}
+        await session.commit()
+        return {"status": "deleted", "alert_id": alert_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete alert {alert_id}: {exc}")
+
+
+@app.post("/alerts/delete-batch")
+async def delete_alert_batch(payload: AlertDeleteBatch, session: AsyncSession = Depends(get_session)):
+    """Delete multiple alerts by ID."""
+    try:
+        unique_ids = sorted({int(alert_id) for alert_id in payload.alert_ids if int(alert_id) > 0})
+        if not unique_ids:
+            return {"status": "skipped", "deleted_count": 0, "deleted_ids": []}
+
+        stmt = text("DELETE FROM alerts WHERE id IN :ids RETURNING id").bindparams(
+            bindparam("ids", expanding=True)
+        )
+        result = await session.execute(stmt, {"ids": unique_ids})
+        deleted_ids = [int(row[0]) for row in result.fetchall()]
+        await session.commit()
+        return {
+            "status": "deleted",
+            "deleted_count": len(deleted_ids),
+            "deleted_ids": deleted_ids,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete alerts: {exc}")
 
 @app.post("/alerts/create")
 async def create_alert(alert: AlertCreate, session: AsyncSession = Depends(get_session)):
@@ -775,23 +950,33 @@ async def create_alert(alert: AlertCreate, session: AsyncSession = Depends(get_s
             "threat_category": alert.threat_category,  # Store threat category
         }
     )
+    alert_id = result.fetchone()[0]
     await session.commit()
 
-    alert_id = result.fetchone()[0]
-
-    # Broadcast alert via WebSocket for real-time updates
-    await broadcast_alert({
+    alert_payload = {
         "id": alert_id,
         "flow_id": alert.flow_id,
         "hostname": alert.hostname,
         "src_ip": alert.src_ip,
         "dst_ip": alert.dst_ip,
+        "src_port": alert.src_port,
+        "dst_port": alert.dst_port,
+        "protocol": alert.protocol or "unknown",
         "risk_score": alert.risk_score,
         "severity": severity,
         "reason": alert.reason,
         "threat_category": alert.threat_category,
-        "timestamp": datetime.utcnow().timestamp()
-    })
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+    # Broadcast alert via WebSocket for real-time updates.
+    await broadcast_alert({**alert_payload, "timestamp": datetime.utcnow().timestamp()})
+
+    # Trigger alert integrations without impacting main alert creation path.
+    try:
+        await dispatch_alert_notifications(session, alert_payload)
+    except Exception as exc:
+        print(f"[Alerting] Failed auto-dispatch for alert {alert_id}: {exc}")
 
     return {"status": "created", "alert_id": alert_id, "severity": severity, "risk_score": alert.risk_score}
 
@@ -828,8 +1013,11 @@ async def create_rule(rule: RuleCreate, session: AsyncSession = Depends(get_sess
     return {"status": "created", "rule_type": rule.rule_type, "action": rule.action}
 
 @app.get("/rules/recent")
-async def get_recent_rules(session: AsyncSession = Depends(get_session)):
-    """Get the most recent rule recommendations"""
+async def get_recent_rules(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get recent rule recommendations with configurable limit."""
     try:
         result = await session.execute(
             text("""
@@ -840,8 +1028,9 @@ async def get_recent_rules(session: AsyncSession = Depends(get_session)):
                 FROM rules r
                 JOIN alerts a ON r.alert_id = a.id
                 ORDER BY r.created_at DESC
-                LIMIT 100
-            """)
+                LIMIT :limit
+            """),
+            {"limit": limit}
         )
         rows = result.fetchall()
 
@@ -869,9 +1058,195 @@ async def get_recent_rules(session: AsyncSession = Depends(get_session)):
         return []
 
 @app.get("/rules/recommended")
-async def get_recommended_rules(session: AsyncSession = Depends(get_session)):
-    """Alias for /rules/recent - get recommended firewall rules"""
-    return await get_recent_rules(session)
+async def get_recommended_rules(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Alias for /rules/recent - get recommended firewall rules."""
+    return await get_recent_rules(limit=limit, session=session)
+
+
+@app.post("/rules/{rule_id}/apply")
+async def apply_rule(
+    rule_id: int,
+    payload: RuleApplyRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Apply a pending firewall rule by enforcing block policy."""
+    try:
+        rule_result = await session.execute(
+            text("""
+                SELECT id, alert_id, rule_type, action, target, reason, confidence, status
+                FROM rules
+                WHERE id = :rule_id
+            """),
+            {"rule_id": rule_id}
+        )
+        row = rule_result.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+
+        action = (row[3] or "").upper()
+        target = row[4]
+        status = row[7]
+        expires_hours = payload.expires_hours if payload else 24
+
+        if status == "applied":
+            return {
+                "status": "already_applied",
+                "rule_id": rule_id,
+                "target": target,
+            }
+
+        if action != "BLOCK":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only BLOCK rules can be auto-applied right now (got action={action})"
+            )
+
+        if not _is_ip_address(target):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Rule target '{target}' is not an IP address and cannot be blocked automatically"
+            )
+
+        if _is_protected_infrastructure_ip(target):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Refusing to block protected infrastructure IP {target}"
+            )
+
+        alert_meta = await session.execute(
+            text("SELECT threat_category FROM alerts WHERE id = :alert_id"),
+            {"alert_id": row[1]}
+        )
+        alert_row = alert_meta.fetchone()
+        threat_category = alert_row[0] if alert_row else None
+
+        await session.execute(
+            text("""
+                INSERT INTO blocked_ips (
+                    ip, block_reason, confidence, expires_at, threat_category,
+                    manual_override, alert_count, auto_blocked, added_by, notes, permanent
+                )
+                VALUES (
+                    :ip, :block_reason, :confidence, NOW() + INTERVAL '1 hour' * :expires_hours,
+                    :threat_category, TRUE, 1, FALSE, 'rule_engine', :notes, FALSE
+                )
+                ON CONFLICT (ip)
+                DO UPDATE SET
+                    block_reason = EXCLUDED.block_reason,
+                    confidence = GREATEST(blocked_ips.confidence, EXCLUDED.confidence),
+                    expires_at = GREATEST(blocked_ips.expires_at, EXCLUDED.expires_at),
+                    threat_category = COALESCE(EXCLUDED.threat_category, blocked_ips.threat_category),
+                    manual_override = TRUE,
+                    auto_blocked = FALSE,
+                    updated_at = NOW()
+            """),
+            {
+                "ip": target,
+                "block_reason": row[5] or f"Applied by rule {rule_id}",
+                "confidence": max(0.0, min(1.0, float(row[6] or 0.0))),
+                "expires_hours": expires_hours,
+                "threat_category": threat_category,
+                "notes": f"Applied from rule #{rule_id}",
+            }
+        )
+
+        await session.execute(
+            text("""
+                INSERT INTO block_history (ip, blocked_at, reason, threat_category)
+                VALUES (:ip, NOW(), :reason, :threat_category)
+            """),
+            {
+                "ip": target,
+                "reason": row[5] or f"Applied by rule {rule_id}",
+                "threat_category": threat_category
+            }
+        )
+
+        await session.execute(
+            text("""
+                UPDATE rules
+                SET status = 'applied'
+                WHERE id = :rule_id
+            """),
+            {"rule_id": rule_id}
+        )
+
+        await session.execute(
+            text("""
+                INSERT INTO firewall_sync_log (action, ip, success, error_message, execution_time_ms)
+                VALUES ('block', :ip, TRUE, :message, 0)
+            """),
+            {
+                "ip": target,
+                "message": f"Queued by /rules/{rule_id}/apply and pending firewall sync"
+            }
+        )
+        await session.commit()
+
+        await broadcast_rule({
+            "id": rule_id,
+            "alert_id": row[1],
+            "rule_type": row[2],
+            "action": action,
+            "target": target,
+            "status": "applied",
+            "timestamp": datetime.utcnow().timestamp()
+        })
+
+        return {
+            "status": "applied",
+            "rule_id": rule_id,
+            "target": target,
+            "expires_hours": expires_hours,
+            "message": "Rule applied and queued for firewall synchronization",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error applying rule {rule_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to apply rule: {e}")
+
+
+@app.post("/rules/{rule_id}/reject")
+async def reject_rule(rule_id: int, session: AsyncSession = Depends(get_session)):
+    """Reject a pending firewall rule recommendation."""
+    try:
+        result = await session.execute(
+            text("""
+                UPDATE rules
+                SET status = 'rejected'
+                WHERE id = :rule_id
+                RETURNING id, alert_id, rule_type, action, target
+            """),
+            {"rule_id": rule_id}
+        )
+        row = result.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+
+        await session.commit()
+
+        await broadcast_rule({
+            "id": row[0],
+            "alert_id": row[1],
+            "rule_type": row[2],
+            "action": row[3],
+            "target": row[4],
+            "status": "rejected",
+            "timestamp": datetime.utcnow().timestamp()
+        })
+
+        return {"status": "rejected", "rule_id": row[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error rejecting rule {rule_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reject rule: {e}")
 
 # ============================================================================
 # SELF-HEALING ENDPOINTS
@@ -1443,9 +1818,9 @@ async def get_firewall_status(session: AsyncSession = Depends(get_session)):
         # Recent sync actions
         result = await session.execute(
             text("""
-                SELECT action, ip, success, error_message, execution_time_ms, sync_at
+                SELECT action, ip, success, error_message, execution_time_ms, created_at
                 FROM firewall_sync_log
-                ORDER BY sync_at DESC
+                ORDER BY created_at DESC
                 LIMIT 50
             """)
         )
@@ -1467,9 +1842,9 @@ async def get_firewall_status(session: AsyncSession = Depends(get_session)):
         stats_result = await session.execute(
             text("""
                 SELECT 
-                    COUNT(*) FILTER (WHERE success = TRUE AND sync_at > NOW() - INTERVAL '1 hour') as successful_last_hour,
-                    COUNT(*) FILTER (WHERE success = FALSE AND sync_at > NOW() - INTERVAL '1 hour') as failed_last_hour,
-                    AVG(execution_time_ms) FILTER (WHERE sync_at > NOW() - INTERVAL '1 hour') as avg_execution_time
+                    COUNT(*) FILTER (WHERE success = TRUE AND created_at > NOW() - INTERVAL '1 hour') as successful_last_hour,
+                    COUNT(*) FILTER (WHERE success = FALSE AND created_at > NOW() - INTERVAL '1 hour') as failed_last_hour,
+                    AVG(execution_time_ms) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as avg_execution_time
                 FROM firewall_sync_log
             """)
         )
@@ -2278,6 +2653,33 @@ class AlertingWebhook(BaseModel):
     events: list[str] = ["critical", "high"]  # severity levels to trigger
     headers: dict = {}
 
+
+def _parse_json_array(value: Any, default: list[str]) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except Exception:
+            pass
+    return default
+
+
+def _parse_json_object(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
 @app.get("/alerting/webhooks")
 async def get_alerting_webhooks(session: AsyncSession = Depends(get_session)):
     """Get all configured alerting webhooks"""
@@ -2293,20 +2695,23 @@ async def get_alerting_webhooks(session: AsyncSession = Depends(get_session)):
                 "url": row[2],
                 "type": row[3],
                 "enabled": row[4],
-                "events": row[5],
-                "headers": row[6],
+                "events": _parse_json_array(row[5], ["critical", "high"]),
+                "headers": _parse_json_object(row[6]),
                 "created_at": row[7].isoformat() if row[7] else None
             }
             for row in rows
         ]
     except Exception as e:
         print(f"Error fetching webhooks: {e}")
-        return []
+        raise HTTPException(status_code=500, detail=f"Failed to fetch alerting webhooks: {e}")
 
 @app.post("/alerting/webhooks")
 async def create_alerting_webhook(webhook: AlertingWebhook, session: AsyncSession = Depends(get_session)):
     """Create a new alerting webhook"""
     try:
+        events = webhook.events or ["critical", "high"]
+        headers = webhook.headers or {}
+
         await session.execute(
             text("""
                 INSERT INTO alerting_webhooks (name, url, type, enabled, events, headers)
@@ -2317,15 +2722,15 @@ async def create_alerting_webhook(webhook: AlertingWebhook, session: AsyncSessio
                 "url": webhook.url,
                 "type": webhook.type,
                 "enabled": webhook.enabled,
-                "events": json.dumps(webhook.events),
-                "headers": json.dumps(webhook.headers)
+                "events": json.dumps(events),
+                "headers": json.dumps(headers)
             }
         )
         await session.commit()
         return {"status": "created", "name": webhook.name}
     except Exception as e:
         print(f"Error creating webhook: {e}")
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=f"Failed to create alerting webhook: {e}")
 
 @app.delete("/alerting/webhooks/{webhook_id}")
 async def delete_alerting_webhook(webhook_id: int, session: AsyncSession = Depends(get_session)):
@@ -2353,39 +2758,18 @@ async def test_alerting_webhook(webhook_id: int, session: AsyncSession = Depends
             return {"status": "error", "message": "Webhook not found"}
         
         url, webhook_type, headers = row
-        
-        test_payload = {
-            "text": "[REVENIX TEST] This is a test alert from Revenix Security Platform",
-            "severity": "info",
-            "source": "revenix-test",
-            "timestamp": str(int(time.time()))
-        }
-        
-        # Format payload based on webhook type
-        if webhook_type == "slack":
-            payload = {"text": test_payload["text"], "username": "Revenix Security"}
-        elif webhook_type == "discord":
-            payload = {"content": test_payload["text"], "username": "Revenix Security"}
-        elif webhook_type == "pagerduty":
-            payload = {
-                "routing_key": headers.get("routing_key", ""),
-                "event_action": "trigger",
-                "payload": {
-                    "summary": test_payload["text"],
-                    "severity": "info",
-                    "source": "revenix"
-                }
-            }
-        else:
-            payload = test_payload
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, headers=headers or {}, timeout=10.0)
-            
+        success, response_code, error_message = await send_alert_to_webhook(
+            str(url),
+            str(webhook_type),
+            headers or {},
+            create_test_alert_payload(),
+        )
+
         return {
-            "status": "sent",
-            "response_code": response.status_code,
-            "success": 200 <= response.status_code < 300
+            "status": "sent" if success else "error",
+            "response_code": response_code,
+            "success": success,
+            "message": error_message
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -2393,21 +2777,59 @@ async def test_alerting_webhook(webhook_id: int, session: AsyncSession = Depends
 # ============================================================================
 # ============================================================================
 
-@app.get("/ip/lookup/{ip_address}")
-async def lookup_ip_geolocation(ip_address: str):
-    """Lookup IP geolocation and ASN information"""
+_geo_cache: dict[str, tuple[float, dict]] = {}
+_GEO_CACHE_TTL_SECONDS = 1800
+_MAX_GEO_CACHE_SIZE = 4000
+
+
+def _trim_geo_cache(now: float) -> None:
+    if len(_geo_cache) <= _MAX_GEO_CACHE_SIZE:
+        return
+    stale_keys = [
+        ip for ip, (cached_at, _) in _geo_cache.items()
+        if now - cached_at > _GEO_CACHE_TTL_SECONDS
+    ]
+    for key in stale_keys:
+        _geo_cache.pop(key, None)
+
+    if len(_geo_cache) <= _MAX_GEO_CACHE_SIZE:
+        return
+
+    # Drop oldest entries if still over cap.
+    oldest = sorted(_geo_cache.items(), key=lambda item: item[1][0])[:len(_geo_cache) - _MAX_GEO_CACHE_SIZE]
+    for key, _ in oldest:
+        _geo_cache.pop(key, None)
+
+
+async def _lookup_ip_geolocation(ip_address: str) -> dict:
+    """Lookup IP geolocation and ASN information (cached)."""
+    now = time.time()
+    cached = _geo_cache.get(ip_address)
+    if cached and now - cached[0] <= _GEO_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    private_prefixes = (
+        "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
+        "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+        "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+        "127.", "169.254."
+    )
+    if ip_address.startswith(private_prefixes):
+        result = {"ip": ip_address, "is_private": True, "country": "Private/Local", "country_code": "PRV"}
+        _geo_cache[ip_address] = (now, result)
+        return result
+
     try:
-        # Use ip-api.com (free, no API key required)
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"http://ip-api.com/json/{ip_address}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,query",
                 timeout=5.0
             )
-            
+
         if response.status_code == 200:
             data = response.json()
             if data.get("status") == "success":
-                return {
+                result = {
                     "ip": data.get("query"),
                     "country": data.get("country"),
                     "country_code": data.get("countryCode"),
@@ -2421,14 +2843,128 @@ async def lookup_ip_geolocation(ip_address: str):
                     "org": data.get("org"),
                     "asn": data.get("as"),
                     "asn_name": data.get("asname"),
-                    "is_private": ip_address.startswith(("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "127.", "169.254."))
+                    "is_private": False,
                 }
-            else:
-                return {"ip": ip_address, "error": data.get("message", "Unknown error"), "is_private": True}
-        
-        return {"ip": ip_address, "error": "Lookup failed"}
+                _geo_cache[ip_address] = (now, result)
+                _trim_geo_cache(now)
+                return result
+
+            result = {
+                "ip": ip_address,
+                "error": data.get("message", "Unknown error"),
+                "is_private": True,
+                "country": "Unknown",
+                "country_code": "UNK",
+            }
+            _geo_cache[ip_address] = (now, result)
+            return result
+
+        result = {"ip": ip_address, "error": "Lookup failed", "country": "Unknown", "country_code": "UNK"}
+        _geo_cache[ip_address] = (now, result)
+        return result
     except Exception as e:
-        return {"ip": ip_address, "error": str(e)}
+        result = {"ip": ip_address, "error": str(e), "country": "Unknown", "country_code": "UNK"}
+        _geo_cache[ip_address] = (now, result)
+        return result
+
+
+@app.get("/ip/lookup/{ip_address}")
+async def lookup_ip_geolocation(ip_address: str):
+    """Lookup IP geolocation and ASN information."""
+    return await _lookup_ip_geolocation(ip_address)
+
+
+@app.get("/threats/top-countries")
+async def get_top_threat_countries(
+    limit: int = Query(default=10, ge=1, le=50),
+    lookback_hours: int = Query(default=24, ge=1, le=168),
+    sample_size: int = Query(default=300, ge=10, le=2000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Aggregate top source countries for recent threat alerts."""
+    try:
+        result = await session.execute(
+            text("""
+                SELECT src_ip, severity, threat_category
+                FROM alerts
+                WHERE timestamp > NOW() - INTERVAL '1 hour' * :lookback_hours
+                ORDER BY timestamp DESC
+                LIMIT :sample_size
+            """),
+            {
+                "lookback_hours": lookback_hours,
+                "sample_size": sample_size,
+            }
+        )
+        rows = result.fetchall()
+
+        unique_ips = {row[0] for row in rows if row[0]}
+        ip_geo: dict[str, dict] = {}
+
+        semaphore = asyncio.Semaphore(20)
+
+        async def _resolve_geo(ip: str):
+            async with semaphore:
+                ip_geo[ip] = await _lookup_ip_geolocation(ip)
+
+        if unique_ips:
+            await asyncio.gather(*[_resolve_geo(ip) for ip in unique_ips])
+
+        aggregated: dict[str, dict] = {}
+        for row in rows:
+            src_ip = row[0]
+            severity = (row[1] or "").lower()
+            category = row[2] or "uncategorized"
+
+            geo = ip_geo.get(src_ip) or {"country": "Unknown", "country_code": "UNK"}
+            country = geo.get("country") or ("Private/Local" if geo.get("is_private") else "Unknown")
+            country_code = geo.get("country_code") or ("PRV" if geo.get("is_private") else "UNK")
+
+            if country not in aggregated:
+                aggregated[country] = {
+                    "country": country,
+                    "country_code": country_code,
+                    "count": 0,
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0,
+                    "top_categories": {},
+                    "example_ips": [],
+                }
+
+            entry = aggregated[country]
+            entry["count"] += 1
+            if severity in {"critical", "high", "medium", "low"}:
+                entry[severity] += 1
+
+            entry["top_categories"][category] = entry["top_categories"].get(category, 0) + 1
+            if len(entry["example_ips"]) < 3 and src_ip not in entry["example_ips"]:
+                entry["example_ips"].append(src_ip)
+
+        countries = sorted(aggregated.values(), key=lambda item: item["count"], reverse=True)
+        for item in countries:
+            item["top_categories"] = sorted(
+                item["top_categories"].items(),
+                key=lambda pair: pair[1],
+                reverse=True
+            )[:3]
+
+        return {
+            "generated_at": datetime.utcnow().isoformat(),
+            "lookback_hours": lookback_hours,
+            "sampled_alerts": len(rows),
+            "countries": countries[:limit],
+        }
+    except Exception as e:
+        print(f"Error aggregating top threat countries: {e}")
+        return {
+            "generated_at": datetime.utcnow().isoformat(),
+            "lookback_hours": lookback_hours,
+            "sampled_alerts": 0,
+            "countries": [],
+            "error": str(e),
+        }
 
 # ============================================================================
 # ============================================================================
@@ -2450,13 +2986,16 @@ async def verify_firewall_rules(session: AsyncSession = Depends(get_session)):
             text("""
                 SELECT ip FROM blocked_ips 
                 WHERE (expires_at > NOW() OR permanent = TRUE)
-                AND manual_override = TRUE OR confidence >= 0.9
+                AND (manual_override = TRUE OR confidence >= 0.9)
             """)
         )
         blocked_ips = [row[0] for row in result.fetchall()]
+        blocked_ips_set = set(blocked_ips)
         
         if platform.system() == "Linux":
-            # Check nftables
+            missing_ips = set(blocked_ips_set)
+
+            # Check nftables first
             try:
                 nft_output = subprocess.run(
                     ["nft", "list", "set", "inet", "revenix", "blocked_ips"],
@@ -2466,43 +3005,67 @@ async def verify_firewall_rules(session: AsyncSession = Depends(get_session)):
                     for ip in blocked_ips:
                         if ip in nft_output.stdout:
                             results["verified_blocks"].append(ip)
-                        else:
-                            results["missing_blocks"].append(ip)
                 else:
                     results["errors"].append(f"nftables query failed: {nft_output.stderr}")
             except subprocess.TimeoutExpired:
                 results["errors"].append("nftables query timed out")
             except FileNotFoundError:
-                # Try iptables as fallback
+                pass
+
+            verified_set = set(results["verified_blocks"])
+            missing_ips = blocked_ips_set - verified_set
+
+            # Fallback verify with iptables for any still-missing entries.
+            if missing_ips:
                 try:
-                    ipt_output = subprocess.run(
-                        ["iptables", "-L", "INPUT", "-n"],
+                    ipt_input = subprocess.run(
+                        ["iptables", "-S", "REVENIX"],
                         capture_output=True, text=True, timeout=5
                     )
-                    if ipt_output.returncode == 0:
-                        for ip in blocked_ips:
-                            if ip in ipt_output.stdout:
+                    if ipt_input.returncode != 0:
+                        ipt_input = subprocess.run(
+                            ["iptables", "-L", "INPUT", "-n"],
+                            capture_output=True, text=True, timeout=5
+                        )
+
+                    if ipt_input.returncode == 0:
+                        for ip in list(missing_ips):
+                            if ip in ipt_input.stdout:
                                 results["verified_blocks"].append(ip)
-                            else:
-                                results["missing_blocks"].append(ip)
+                                missing_ips.discard(ip)
+                    else:
+                        results["errors"].append(f"iptables query failed: {ipt_input.stderr}")
                 except Exception as e:
                     results["errors"].append(f"iptables fallback failed: {e}")
-                    
+
+            results["missing_blocks"] = sorted(list(missing_ips))
+
         elif platform.system() == "Windows":
             # Check Windows Firewall
+            missing_ips = set(blocked_ips_set)
             try:
                 for ip in blocked_ips:
+                    ps_script = (
+                        f"$in = Get-NetFirewallRule -DisplayName 'Revenix Block {ip} IN' -ErrorAction SilentlyContinue; "
+                        f"$out = Get-NetFirewallRule -DisplayName 'Revenix Block {ip} OUT' -ErrorAction SilentlyContinue; "
+                        f"$legacy = Get-NetFirewallRule -DisplayName 'Revenix_Block_{ip.replace('.', '_')}' -ErrorAction SilentlyContinue; "
+                        "if (($in -and $out) -or $legacy) { 'FOUND' }"
+                    )
                     fw_output = subprocess.run(
-                        ["netsh", "advfirewall", "firewall", "show", "rule", f"name=Revenix_Block_{ip.replace('.', '_')}"],
+                        ["powershell", "-Command", ps_script],
                         capture_output=True, text=True, timeout=5
                     )
-                    if "Rule Name:" in fw_output.stdout:
+                    if "FOUND" in fw_output.stdout:
                         results["verified_blocks"].append(ip)
-                    else:
-                        results["missing_blocks"].append(ip)
+                        missing_ips.discard(ip)
             except Exception as e:
                 results["errors"].append(f"Windows Firewall check failed: {e}")
+            results["missing_blocks"] = sorted(list(missing_ips))
+        else:
+            results["errors"].append(f"Unsupported platform for verification: {platform.system()}")
+            results["missing_blocks"] = blocked_ips
         
+        results["verified_blocks"] = sorted(list(set(results["verified_blocks"])))
         results["total_blocked"] = len(blocked_ips)
         results["verification_rate"] = len(results["verified_blocks"]) / len(blocked_ips) * 100 if blocked_ips else 100
         
