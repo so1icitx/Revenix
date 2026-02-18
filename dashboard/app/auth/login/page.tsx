@@ -15,12 +15,37 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [retryAfter, setRetryAfter] = useState(0)
   const [imageError, setImageError] = useState(false)
+  const [canCreateFirstAccount, setCanCreateFirstAccount] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
+    let cancelled = false
+
     if (typeof window !== "undefined") {
       sessionStorage.removeItem("revenix_user")
       sessionStorage.removeItem("revenix_token")
+    }
+
+    const fetchSignupAvailability = async () => {
+      try {
+        const response = await fetch(`${API_URL}/auth/check-users`, {
+          method: "GET",
+          cache: "no-store",
+        })
+        if (!response.ok) return
+
+        const data = await response.json()
+        if (!cancelled) {
+          setCanCreateFirstAccount((data.user_count || 0) === 0)
+        }
+      } catch {
+        // Keep signup hidden when availability check fails.
+      }
+    }
+
+    fetchSignupAvailability()
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -136,14 +161,16 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-5 text-center">
-            <p className="text-xs text-muted-foreground">
-              Don't have an account?{" "}
-              <a href="/auth/signup" className="text-primary hover:underline font-medium">
-                Create Account
-              </a>
-            </p>
-          </div>
+          {canCreateFirstAccount && (
+            <div className="mt-5 text-center">
+              <p className="text-xs text-muted-foreground">
+                First-time setup:{" "}
+                <a href="/auth/signup" className="text-primary hover:underline font-medium">
+                  Create Admin Account
+                </a>
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

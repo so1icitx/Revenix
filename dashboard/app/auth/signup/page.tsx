@@ -14,17 +14,64 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
   const [imageError, setImageError] = useState(false)
+  const [checkingSignup, setCheckingSignup] = useState(true)
+  const [signupEnabled, setSignupEnabled] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
+    let cancelled = false
+
     if (typeof window !== "undefined") {
       sessionStorage.removeItem("revenix_user")
       sessionStorage.removeItem("revenix_token")
     }
-  }, [])
+
+    const verifySignupAvailability = async () => {
+      try {
+        const response = await fetch(`${API_URL}/auth/check-users`, {
+          method: "GET",
+          cache: "no-store",
+        })
+
+        if (!response.ok) {
+          throw new Error("Failed to verify account setup state")
+        }
+
+        const data = await response.json()
+        const hasUsers = (data.user_count || 0) > 0
+        if (cancelled) return
+
+        if (hasUsers) {
+          setSignupEnabled(false)
+          router.replace("/auth/login")
+          return
+        }
+
+        setSignupEnabled(true)
+      } catch {
+        if (!cancelled) {
+          setSignupEnabled(false)
+          setError("Signup is unavailable. Please sign in.")
+        }
+      } finally {
+        if (!cancelled) {
+          setCheckingSignup(false)
+        }
+      }
+    }
+
+    verifySignupAvailability()
+    return () => {
+      cancelled = true
+    }
+  }, [router])
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!signupEnabled) {
+      setError("Signup is disabled after initial setup. Please sign in.")
+      return
+    }
     setError("")
     setLoading(true)
     try {
@@ -47,6 +94,36 @@ export default function SignupPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  if (checkingSignup) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-full max-w-sm p-6 text-center">
+          <Loader2 className="w-6 h-6 animate-spin mx-auto text-primary mb-3" />
+          <p className="text-sm text-muted-foreground">Checking setup status...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!signupEnabled) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-full max-w-sm p-6 text-center card-surface">
+          <h1 className="text-lg font-semibold text-foreground mb-2">Signup Disabled</h1>
+          <p className="text-sm text-muted-foreground mb-4">
+            An admin account already exists. Use sign in to access the dashboard.
+          </p>
+          <a
+            href="/auth/login"
+            className="inline-block px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition"
+          >
+            Go to Sign In
+          </a>
+        </div>
+      </div>
+    )
   }
 
   if (success) {
