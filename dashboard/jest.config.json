@@ -6,7 +6,17 @@
     "^@/(.*)$": "<rootDir>/$1"
   },
   "transform": {
-    "^.+\\.(ts|tsx)$": ["ts-jest", { "tsconfig": "tsconfig.json" }]
+    "^.+\\.(ts|tsx)$": [
+      "ts-jest",
+      {
+        "tsconfig": {
+          "jsx": "react-jsx",
+          "module": "commonjs",
+          "moduleResolution": "node",
+          "esModuleInterop": true
+        }
+      }
+    ]
   },
   "collectCoverageFrom": ["components/**/*.{ts,tsx}", "app/**/*.{ts,tsx}", "!**/*.d.ts"]
 }
