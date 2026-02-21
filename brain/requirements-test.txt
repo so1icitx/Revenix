@@ -1,0 +1,8 @@
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+hypothesis>=6.82.0
+# Required for importing app modules in tests
+scikit-learn>=1.0.0
+numpy>=1.20.0
