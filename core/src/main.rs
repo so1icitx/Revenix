@@ -233,7 +233,10 @@ async fn main() -> Result<()> {
     thread::sleep(Duration::from_secs(3));
     register_device(&agent_id, &hostname_str).await.ok();
 
-    let redis_password = std::env::var("REDIS_PASSWORD").ok();
+    let redis_password = std::env::var("REDIS_PASSWORD")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
 
