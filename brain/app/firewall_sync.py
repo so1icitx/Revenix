@@ -10,12 +10,15 @@ import logging
 import asyncio
 import subprocess
 import time
+import ipaddress
 from typing import List, Dict, Set
 import aiohttp
+from .internal_api import get_api_base_url, get_internal_headers
 
 logger = logging.getLogger(__name__)
 
-API_URL = "http://api:8000"
+API_URL = get_api_base_url()
+INTERNAL_HEADERS = get_internal_headers()
 
 class FirewallSyncService:
     """
@@ -108,7 +111,7 @@ class FirewallSyncService:
     async def get_database_blocked_ips(self) -> List[Dict]:
         """Fetch currently blocked IPs from database API."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 async with session.get(f"{API_URL}/self-healing/blocked-ips") as resp:
                     if resp.status == 200:
                         return await resp.json()
@@ -122,7 +125,7 @@ class FirewallSyncService:
     async def log_sync_action(self, action: str, ip: str, success: bool, error_msg: str = None, execution_time_ms: int = 0):
         """Log firewall sync action to database."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 # We'll add this endpoint in the API next
                 payload = {
                     "action": action,
@@ -139,6 +142,12 @@ class FirewallSyncService:
     
     async def block_ip_in_firewall(self, ip: str) -> bool:
         """Add an IP to the nftables blocked set."""
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            logger.error(f"[FirewallSync] Invalid IP address: {ip}")
+            return False
+
         if not self.enable_nftables:
             logger.info(f"[FirewallSync] [SIMULATION] Would block IP: {ip}")
             return True
@@ -176,6 +185,12 @@ class FirewallSyncService:
     
     async def unblock_ip_in_firewall(self, ip: str) -> bool:
         """Remove an IP from the nftables blocked set."""
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            logger.error(f"[FirewallSync] Invalid IP address: {ip}")
+            return False
+
         if not self.enable_nftables:
             logger.info(f"[FirewallSync] [SIMULATION] Would unblock IP: {ip}")
             return True

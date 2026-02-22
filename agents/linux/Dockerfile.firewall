@@ -1,0 +1,16 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        iptables \
+        nftables \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/revenix
+COPY firewall-sync.py /opt/revenix/firewall-sync.py
+
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python3", "/opt/revenix/firewall-sync.py"]

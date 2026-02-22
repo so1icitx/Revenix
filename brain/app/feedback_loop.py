@@ -15,10 +15,12 @@ from typing import Dict, List, Optional
 from collections import defaultdict
 import aiohttp
 import time
+from .internal_api import get_api_base_url, get_internal_headers
 
 logger = logging.getLogger(__name__)
 
-API_URL = "http://api:8000"
+API_URL = get_api_base_url()
+INTERNAL_HEADERS = get_internal_headers()
 
 class FeedbackLoopSystem:
     """
@@ -63,7 +65,7 @@ class FeedbackLoopSystem:
     async def fetch_recent_feedback(self, hours: int = 24) -> List[Dict]:
         """Fetch recent feedback from the database."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 # We'll add this endpoint to the API
                 async with session.get(f"{API_URL}/self-healing/feedback/recent?hours={hours}") as resp:
                     if resp.status == 200:
@@ -78,7 +80,7 @@ class FeedbackLoopSystem:
     async def fetch_model_config(self) -> Dict:
         """Fetch current model configuration from database."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 async with session.get(f"{API_URL}/self-healing/model-config") as resp:
                     if resp.status == 200:
                         config = await resp.json()
@@ -98,7 +100,7 @@ class FeedbackLoopSystem:
     async def update_model_config(self, config_key: str, new_value: float):
         """Update a model configuration value."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 async with session.post(
                     f"{API_URL}/self-healing/model-config/{config_key}",
                     params={"new_value": str(new_value), "updated_by": "feedback_loop"}
@@ -203,7 +205,7 @@ class FeedbackLoopSystem:
         Returns list of rules that should be deprecated.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 # Fetch rule effectiveness data
                 async with session.get(f"{API_URL}/self-healing/rule-effectiveness") as resp:
                     if resp.status == 200:
@@ -262,7 +264,7 @@ class FeedbackLoopSystem:
                         feature_feedback[feature_name]['fn'] += 1
             
             # Update feature feedback in database
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 for feature_name, counts in feature_feedback.items():
                     await session.post(
                         f"{API_URL}/self-healing/feature-feedback/update",

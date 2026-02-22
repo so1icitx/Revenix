@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text, bindparam
 from sqlalchemy.ext.asyncio import AsyncSession
 from db import get_session
@@ -13,6 +14,8 @@ import httpx
 import subprocess
 import platform
 import json
+import os
+import secrets
 from typing import Optional, Any
 import aiohttp # Import aiohttp
 
@@ -20,6 +23,25 @@ from app.simple_auth import SimpleUser, SimpleLogin, check_user_count, create_us
 from app.rate_limiter import RateLimitMiddleware, create_rate_limit_config
 
 consumer_task = None
+INTERNAL_SERVICE_TOKEN = os.environ.get("INTERNAL_SERVICE_TOKEN", "").strip()
+
+PUBLIC_EXACT_PATHS = {
+    "/health",
+    "/healthz",
+    "/auth/check-users",
+    "/auth/signup",
+    "/auth/login",
+    "/openapi.json",
+    "/redoc",
+    "/docs",
+}
+
+PUBLIC_PREFIX_PATHS = (
+    "/docs",
+    "/redoc",
+    "/openapi",
+    "/socket.io",
+)
 
 class LearningState:
     def __init__(self):
@@ -284,6 +306,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _is_public_path(path: str) -> bool:
+    if path in PUBLIC_EXACT_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in PUBLIC_PREFIX_PATHS)
+
+
+def _authenticate_jwt(request: Request) -> Optional[dict]:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    return decode_access_token(token)
+
+
+def _authenticate_internal_service(request: Request) -> Optional[dict]:
+    if not INTERNAL_SERVICE_TOKEN:
+        return None
+    provided_token = request.headers.get("x-internal-token", "").strip()
+    if not provided_token:
+        return None
+    if not secrets.compare_digest(provided_token, INTERNAL_SERVICE_TOKEN):
+        return None
+    return {"sub": "internal-service", "role": "admin", "internal": True}
+
+
+def _internal_service_headers() -> dict[str, str]:
+    if not INTERNAL_SERVICE_TOKEN:
+        return {}
+    return {"X-Internal-Token": INTERNAL_SERVICE_TOKEN}
+
+
+@app.middleware("http")
+async def enforce_api_authentication(request: Request, call_next):
+    if request.method == "OPTIONS" or _is_public_path(request.url.path):
+        return await call_next(request)
+
+    user_payload = _authenticate_internal_service(request)
+    if user_payload is None:
+        user_payload = _authenticate_jwt(request)
+
+    if user_payload is None:
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+
+    request.state.user = user_payload
+    return await call_next(request)
+
 # Mount Socket.IO for WebSocket support
 app.mount("/socket.io", socket_app)
 
@@ -450,7 +521,9 @@ async def signup(user: SimpleUser, session: AsyncSession = Depends(get_session))
             )
         
         # Create JWT token
-        access_token = create_access_token(data={"sub": new_user["username"], "user_id": new_user["id"]})
+        access_token = create_access_token(
+            data={"sub": new_user["username"], "user_id": new_user["id"], "role": new_user.get("role", "user")}
+        )
         
         return {
             "success": True, 
@@ -472,7 +545,9 @@ async def login(credentials: SimpleLogin, session: AsyncSession = Depends(get_se
             raise HTTPException(status_code=401, detail="Invalid username or password")
         
         # Create JWT token
-        access_token = create_access_token(data={"sub": user["username"], "user_id": user["id"]})
+        access_token = create_access_token(
+            data={"sub": user["username"], "user_id": user["id"], "role": user.get("role", "user")}
+        )
         
         return {
             "success": True, 
@@ -739,10 +814,14 @@ async def get_live_flow_stats(
 
 @app.get("/devices/profiles")
 async def get_device_profiles_proxy():
-    """Proxy endpoint to get device profiles from Brain API without auth."""
+    """Proxy endpoint to get device profiles from Brain API."""
     try:
         async with aiohttp.ClientSession() as client:
-            async with client.get("http://brain:8001/devices/profiles", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with client.get(
+                "http://brain:8001/devices/profiles",
+                headers=_internal_service_headers(),
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 elif resp.status == 401:
@@ -1684,7 +1763,11 @@ async def update_model_config(config_key: str, new_value: str, updated_by: str =
             # Immediately notify brain service to reload config
             try:
                 async with httpx.AsyncClient() as client:
-                    brain_response = await client.post("http://brain:8001/admin/reload-config", timeout=5.0)
+                    brain_response = await client.post(
+                        "http://brain:8001/admin/reload-config",
+                        headers=_internal_service_headers(),
+                        timeout=5.0,
+                    )
                     if brain_response.status_code == 200:
                         print(f"[SelfHealing] ✓ Brain service reloaded config for {config_key}")
             except Exception as reload_error:
@@ -1716,7 +1799,11 @@ async def update_model_config(config_key: str, new_value: str, updated_by: str =
         # Immediately notify brain service to reload config
         try:
             async with httpx.AsyncClient() as client:
-                brain_response = await client.post("http://brain:8001/admin/reload-config", timeout=5.0)
+                brain_response = await client.post(
+                    "http://brain:8001/admin/reload-config",
+                    headers=_internal_service_headers(),
+                    timeout=5.0,
+                )
                 if brain_response.status_code == 200:
                     print(f"[SelfHealing] ✓ Brain service reloaded config for {config_key}")
                 else:
@@ -2503,6 +2590,7 @@ async def get_learning_status(session: AsyncSession = Depends(get_session)):
             async with aiohttp.ClientSession() as client:
                 async with client.get(
                     "http://brain:8001/devices/profiles",
+                    headers=_internal_service_headers(),
                     timeout=aiohttp.ClientTimeout(total=2),
                 ) as resp:
                     if resp.status == 200:
@@ -2615,6 +2703,7 @@ async def get_system_health_proxy():
         async with aiohttp.ClientSession() as client:
             async with client.get(
                 "http://brain:8001/health",
+                headers=_internal_service_headers(),
                 timeout=aiohttp.ClientTimeout(total=2),
             ) as resp:
                 if resp.status == 200:
@@ -2971,17 +3060,22 @@ async def get_top_threat_countries(
 
 @app.post("/firewall/verify")
 async def verify_firewall_rules(session: AsyncSession = Depends(get_session)):
-    """Verify that firewall rules are actually applied"""
-    
+    """
+    Verify firewall enforcement using sync logs from agents/brain.
+    Note: platform refers to API host container OS, not endpoint OS.
+    """
+
     results = {
         "platform": platform.system(),
+        "verification_mode": "sync_log",
+        "platform_note": "Platform is API host OS; enforcement may run on remote agents.",
         "verified_blocks": [],
         "missing_blocks": [],
-        "errors": []
+        "errors": [],
     }
-    
+
     try:
-        # Get all blocked IPs from database
+        # Get currently blocked IPs expected to be enforced.
         result = await session.execute(
             text("""
                 SELECT ip FROM blocked_ips 
@@ -2991,84 +3085,68 @@ async def verify_firewall_rules(session: AsyncSession = Depends(get_session)):
         )
         blocked_ips = [row[0] for row in result.fetchall()]
         blocked_ips_set = set(blocked_ips)
-        
-        if platform.system() == "Linux":
-            missing_ips = set(blocked_ips_set)
 
-            # Check nftables first
-            try:
-                nft_output = subprocess.run(
-                    ["nft", "list", "set", "inet", "revenix", "blocked_ips"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if nft_output.returncode == 0:
-                    for ip in blocked_ips:
-                        if ip in nft_output.stdout:
-                            results["verified_blocks"].append(ip)
-                else:
-                    results["errors"].append(f"nftables query failed: {nft_output.stderr}")
-            except subprocess.TimeoutExpired:
-                results["errors"].append("nftables query timed out")
-            except FileNotFoundError:
-                pass
+        if not blocked_ips:
+            results["missing_blocks"] = []
+            results["total_blocked"] = 0
+            results["verification_rate"] = 100
+            results["recent_sync_failures"] = []
+            return results
 
-            verified_set = set(results["verified_blocks"])
-            missing_ips = blocked_ips_set - verified_set
+        ip_activity_result = await session.execute(
+            text("""
+                SELECT
+                    ip,
+                    MAX(CASE WHEN action = 'block' AND success = TRUE THEN created_at END) AS last_block_at,
+                    MAX(CASE WHEN action = 'unblock' AND success = TRUE THEN created_at END) AS last_unblock_at
+                FROM firewall_sync_log
+                WHERE ip IN :ips
+                GROUP BY ip
+            """).bindparams(bindparam("ips", expanding=True)),
+            {"ips": blocked_ips},
+        )
+        ip_activity_rows = ip_activity_result.fetchall()
+        ip_activity_map = {row[0]: {"last_block_at": row[1], "last_unblock_at": row[2]} for row in ip_activity_rows}
 
-            # Fallback verify with iptables for any still-missing entries.
-            if missing_ips:
-                try:
-                    ipt_input = subprocess.run(
-                        ["iptables", "-S", "REVENIX"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if ipt_input.returncode != 0:
-                        ipt_input = subprocess.run(
-                            ["iptables", "-L", "INPUT", "-n"],
-                            capture_output=True, text=True, timeout=5
-                        )
+        for ip in blocked_ips:
+            activity = ip_activity_map.get(ip)
+            if not activity:
+                continue
+            last_block_at = activity["last_block_at"]
+            last_unblock_at = activity["last_unblock_at"]
+            if last_block_at and (not last_unblock_at or last_block_at > last_unblock_at):
+                results["verified_blocks"].append(ip)
 
-                    if ipt_input.returncode == 0:
-                        for ip in list(missing_ips):
-                            if ip in ipt_input.stdout:
-                                results["verified_blocks"].append(ip)
-                                missing_ips.discard(ip)
-                    else:
-                        results["errors"].append(f"iptables query failed: {ipt_input.stderr}")
-                except Exception as e:
-                    results["errors"].append(f"iptables fallback failed: {e}")
+        verified_set = set(results["verified_blocks"])
+        missing_ips = blocked_ips_set - verified_set
+        results["missing_blocks"] = sorted(list(missing_ips))
 
-            results["missing_blocks"] = sorted(list(missing_ips))
+        failures_result = await session.execute(
+            text("""
+                SELECT ip, error_message, created_at
+                FROM firewall_sync_log
+                WHERE success = FALSE
+                AND ip IN :ips
+                ORDER BY created_at DESC
+                LIMIT 20
+            """).bindparams(bindparam("ips", expanding=True)),
+            {"ips": blocked_ips},
+        )
+        failure_rows = failures_result.fetchall()
+        results["recent_sync_failures"] = [
+            {
+                "ip": row[0],
+                "error": row[1] or "unknown error",
+                "created_at": row[2].isoformat() if row[2] else None,
+            }
+            for row in failure_rows
+        ]
+        results["errors"] = [f"{entry['ip']}: {entry['error']}" for entry in results["recent_sync_failures"][:5]]
 
-        elif platform.system() == "Windows":
-            # Check Windows Firewall
-            missing_ips = set(blocked_ips_set)
-            try:
-                for ip in blocked_ips:
-                    ps_script = (
-                        f"$in = Get-NetFirewallRule -DisplayName 'Revenix Block {ip} IN' -ErrorAction SilentlyContinue; "
-                        f"$out = Get-NetFirewallRule -DisplayName 'Revenix Block {ip} OUT' -ErrorAction SilentlyContinue; "
-                        f"$legacy = Get-NetFirewallRule -DisplayName 'Revenix_Block_{ip.replace('.', '_')}' -ErrorAction SilentlyContinue; "
-                        "if (($in -and $out) -or $legacy) { 'FOUND' }"
-                    )
-                    fw_output = subprocess.run(
-                        ["powershell", "-Command", ps_script],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if "FOUND" in fw_output.stdout:
-                        results["verified_blocks"].append(ip)
-                        missing_ips.discard(ip)
-            except Exception as e:
-                results["errors"].append(f"Windows Firewall check failed: {e}")
-            results["missing_blocks"] = sorted(list(missing_ips))
-        else:
-            results["errors"].append(f"Unsupported platform for verification: {platform.system()}")
-            results["missing_blocks"] = blocked_ips
-        
         results["verified_blocks"] = sorted(list(set(results["verified_blocks"])))
         results["total_blocked"] = len(blocked_ips)
         results["verification_rate"] = len(results["verified_blocks"]) / len(blocked_ips) * 100 if blocked_ips else 100
-        
+
         return results
     except Exception as e:
         return {"error": str(e), "verified_blocks": [], "missing_blocks": []}

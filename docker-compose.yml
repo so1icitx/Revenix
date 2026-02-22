@@ -3,10 +3,10 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: revenix
-      POSTGRES_PASSWORD: revenix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_POSTGRES_PASSWORD}
       POSTGRES_DB: revenix_db
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./deploy/sql/users.sql:/docker-entrypoint-initdb.d/00-users.sql
@@ -29,13 +29,13 @@ services:
 
   redis:
     image: redis:latest
-    command: redis-server --bind 0.0.0.0 --protected-mode no
+    command: redis-server --bind 0.0.0.0 --requirepass ${REDIS_PASSWORD:-CHANGE_ME_REDIS_PASSWORD}
     ports:
-      - "0.0.0.0:6379:6379"
+      - "127.0.0.1:6379:6379"
     networks:
       - revenix-net
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-CHANGE_ME_REDIS_PASSWORD} ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -50,9 +50,10 @@ services:
       redis:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql+asyncpg://revenix:revenix@postgres:5432/revenix_db
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET_KEY=rVx9$$kL2mN8pQ4wE7yT1uI6oA3sD5fG0hJ
+      - DATABASE_URL=postgresql+asyncpg://revenix:${POSTGRES_PASSWORD:-CHANGE_ME_POSTGRES_PASSWORD}@postgres:5432/revenix_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-CHANGE_ME_REDIS_PASSWORD}@redis:6379
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-CHANGE_ME_JWT_SECRET_KEY}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-CHANGE_ME_INTERNAL_TOKEN}
     networks:
       - revenix-net
     healthcheck:
@@ -70,7 +71,8 @@ services:
       - brain_models:/app/models
     environment:
       - API_BASE_URL=http://api:8000
-      - JWT_SECRET_KEY=rVx9$$kL2mN8pQ4wE7yT1uI6oA3sD5fG0hJ
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-CHANGE_ME_JWT_SECRET_KEY}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-CHANGE_ME_INTERNAL_TOKEN}
     depends_on:
       api:
         condition: service_healthy
@@ -93,10 +95,12 @@ services:
       - NET_ADMIN
       - NET_RAW
     environment:
-      - REDIS_URL=redis://localhost:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-CHANGE_ME_REDIS_PASSWORD}@localhost:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-CHANGE_ME_REDIS_PASSWORD}
       - API_URL=http://localhost:8000
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-CHANGE_ME_INTERNAL_TOKEN}
       - NETWORK_INTERFACE=${NETWORK_INTERFACE:-}
-      - PROMISCUOUS_MODE=${PROMISCUOUS_MODE:-true}
+      - PROMISCUOUS_MODE=${PROMISCUOUS_MODE:-false}
     depends_on:
       redis:
         condition: service_healthy

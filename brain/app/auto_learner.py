@@ -20,6 +20,7 @@ from .self_healing import SelfHealingSystem  # Added self-healing import
 from .system_health import SystemHealthTracker  # Added system health tracker
 from .sequential_detector import SequentialPatternDetector  # Sequential pattern detection
 from .simple_explainer import SimpleExplainer  # NEW: Human-readable explanations
+from .internal_api import get_api_base_url, get_internal_headers
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,14 +36,15 @@ class AutoLearner:
         anomaly_detector: AnomalyDetector,
         feature_extractor: FlowFeatureExtractor,
         device_profiler: DeviceProfiler,
-        api_url: str = "http://api:8000",
+        api_url: Optional[str] = None,
         check_interval: int = 60,
         training_threshold: int = 200,  # Lowered for faster initial training
         alert_threshold: float = 0.85,  # Higher default to reduce false positives
         retrain_interval: int = 3600,
         model_save_path: str = "/app/models/anomaly_model.pkl"
     ):
-        self.api_url = api_url
+        self.api_url = (api_url or get_api_base_url()).rstrip("/")
+        self.api_headers = get_internal_headers()
         self.check_interval = check_interval
         self.training_threshold = training_threshold
         self.alert_threshold = alert_threshold
@@ -61,14 +63,14 @@ class AutoLearner:
 
         self.autoencoder_detector = AutoencoderDetector()
 
-        # Will be updated with LSTM after initialization
+        # Sequential pattern detector vote gets explicit ensemble weight.
         self.ensemble_engine = EnsembleEngine(
             model_weights={
                 'isolation_forest': 0.25,
                 'autoencoder': 0.30,
                 'baseline_deviation': 0.15,
                 'device_profile': 0.10,
-                'lstm_sequential': 0.20  # NEW: LSTM for sequential patterns
+                'sequential_pattern': 0.20
             },
             min_agreement=2,  # Require at least 2 models to agree
             confidence_threshold=0.65  # Only count high-confidence votes
@@ -165,7 +167,7 @@ class AutoLearner:
         """Reload configuration from database/API (feedback loop integration)."""
         try:
             import aiohttp
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=self.api_headers) as session:
                 async with session.get(f"{self.api_url}/self-healing/model-config") as resp:
                     if resp.status == 200:
                         config = await resp.json()
@@ -269,7 +271,7 @@ class AutoLearner:
 
     async def process_flows(self):
         """Fetch flows, train if needed, then analyze for threats."""
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=self.api_headers) as session:
             flows = await self.fetch_unanalyzed_flows(session)
 
             if not flows or len(flows) == 0:
@@ -784,23 +786,23 @@ class AutoLearner:
             dst_ip = flow.get('dst_ip', 'unknown')
             protocol = flow.get('protocol', 'TCP')
             
-            # Check if LSTM detected this
-            lstm_pattern = None
-            if ensemble_details and 'lstm_sequential' in ensemble_details.get('voting_models', []):
-                # Extract LSTM pattern from the vote reason
+            # Check if sequential pattern detector voted on this flow
+            sequential_pattern = None
+            if ensemble_details and 'sequential_pattern' in ensemble_details.get('voting_models', []):
+                # Extract sequential pattern from the vote reason
                 for model_info in ensemble_details.get('model_votes', []):
-                    if model_info.get('model') == 'lstm_sequential':
+                    if model_info.get('model') == 'sequential_pattern':
                         reason = model_info.get('reason', '')
                         if 'Port Scan' in reason:
-                            lstm_pattern = 'port_scan'
+                            sequential_pattern = 'port_scan'
                         elif 'Network Scan' in reason or 'reconnaissance' in reason.lower():
-                            lstm_pattern = 'network_scan'
+                            sequential_pattern = 'network_scan'
                         elif 'C2' in reason or 'beacon' in reason.lower():
-                            lstm_pattern = 'c2_beacon'
+                            sequential_pattern = 'c2_beacon'
                         elif 'exfiltration' in reason.lower():
-                            lstm_pattern = 'data_exfiltration'
+                            sequential_pattern = 'data_exfiltration'
                         elif 'Brute Force' in reason:
-                            lstm_pattern = 'brute_force'
+                            sequential_pattern = 'brute_force'
             
             # Generate simple, clear explanation
             full_reason = self.simple_explainer.explain_threat(
@@ -810,7 +812,7 @@ class AutoLearner:
                 dst_ip=dst_ip,
                 protocol=protocol,
                 voting_details=ensemble_details,
-                lstm_pattern=lstm_pattern
+                sequential_pattern=sequential_pattern
             )
 
             severity = self.threat_classifier.get_threat_severity(threat_category, risk_score) if threat_category else self._get_severity_from_score(risk_score)
@@ -939,7 +941,7 @@ async def start_auto_learner(anomaly_detector, feature_extractor, device_profile
         anomaly_detector=anomaly_detector,
         feature_extractor=feature_extractor,
         device_profiler=device_profiler,
-        api_url="http://api:8000",
+        api_url=get_api_base_url(),
         check_interval=60,
         training_threshold=200,  # Lowered for faster initial training
         alert_threshold=0.70,    # Lowered to 70% for better detection

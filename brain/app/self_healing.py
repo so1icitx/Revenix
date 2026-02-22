@@ -5,10 +5,12 @@ from collections import defaultdict
 import ipaddress
 import aiohttp
 import asyncio
+from .internal_api import get_api_base_url, get_internal_headers
 
 logger = logging.getLogger(__name__)
 
-API_URL = "http://api:8000"
+API_URL = get_api_base_url()
+INTERNAL_HEADERS = get_internal_headers()
 
 class SelfHealingSystem:
     """
@@ -256,7 +258,7 @@ class SelfHealingSystem:
         try:
             expires_at = time.time() + (duration_minutes * 60)
             
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 payload = {
                     "ip": ip,
                     "confidence": 0.7,  # Moderate confidence
@@ -478,7 +480,7 @@ class SelfHealingSystem:
     async def _sync_from_database(self):
         """Sync trusted/blocked IPs from database to local cache."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 # Sync trusted IPs
                 async with session.get(f"{API_URL}/self-healing/trusted-ips") as resp:
                     if resp.status == 200:
@@ -504,7 +506,7 @@ class SelfHealingSystem:
     async def _persist_trusted_ip(self, ip: str, history: Dict, confidence: float):
         """Persist trusted IP to database."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 payload = {
                     "ip": ip,
                     "confidence": confidence,
@@ -530,7 +532,7 @@ class SelfHealingSystem:
             duration_hours = self.block_duration_hours
         
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 payload = {
                     "ip": ip,
                     "block_reason": reason,

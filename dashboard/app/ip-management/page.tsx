@@ -1,6 +1,7 @@
 "use client"
 
 import { API_URL } from '../../lib/api-config'
+import { getAuthToken } from '../../lib/auth'
 import { useEffect, useState } from "react"
 import { Shield, ShieldOff, Plus, Trash2, Search, RefreshCw, CheckCircle, XCircle, Clock, Globe, Upload } from "lucide-react"
 
@@ -43,12 +44,21 @@ export default function IPManagementPage() {
   const [verificationResult, setVerificationResult] = useState<any>(null)
   const [verifying, setVerifying] = useState(false)
 
+  const authFetch = async (url: string, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers ?? {})
+    const token = getAuthToken()
+    if (token && !headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${token}`)
+    }
+    return fetch(url, { ...init, headers })
+  }
+
   const fetchData = async () => {
     try {
       const [trustedRes, blockedRes, firewallRes] = await Promise.all([
-        fetch(`${API_URL}/self-healing/trusted-ips`),
-        fetch(`${API_URL}/self-healing/blocked-ips`),
-        fetch(`${API_URL}/self-healing/firewall-status`),
+        authFetch(`${API_URL}/self-healing/trusted-ips`),
+        authFetch(`${API_URL}/self-healing/blocked-ips`),
+        authFetch(`${API_URL}/self-healing/firewall-status`),
       ])
       if (trustedRes.ok) setTrustedIPs(await trustedRes.json())
       if (blockedRes.ok) setBlockedIPs(await blockedRes.json())
@@ -61,12 +71,12 @@ export default function IPManagementPage() {
   const lookupGeo = async (ip: string) => {
     if (geoData[ip] || loadingGeo.has(ip)) return
     setLoadingGeo((prev) => new Set(prev).add(ip))
-    try { const r = await fetch(`${API_URL}/ip/lookup/${ip}`); if (r.ok) { const d = await r.json(); setGeoData((p) => ({ ...p, [ip]: d })) } } catch {} finally { setLoadingGeo((prev) => { const u = new Set(prev); u.delete(ip); return u }) }
+    try { const r = await authFetch(`${API_URL}/ip/lookup/${ip}`); if (r.ok) { const d = await r.json(); setGeoData((p) => ({ ...p, [ip]: d })) } } catch {} finally { setLoadingGeo((prev) => { const u = new Set(prev); u.delete(ip); return u }) }
   }
 
   const verifyFirewall = async () => {
     setVerifying(true)
-    try { const r = await fetch(`${API_URL}/firewall/verify`, { method: "POST" }); if (r.ok) setVerificationResult(await r.json()) } catch {} finally { setVerifying(false) }
+    try { const r = await authFetch(`${API_URL}/firewall/verify`, { method: "POST" }); if (r.ok) setVerificationResult(await r.json()) } catch {} finally { setVerifying(false) }
   }
 
   const handleBulkOperation = async (action: "whitelist" | "block" | "unblock") => {
@@ -74,7 +84,7 @@ export default function IPManagementPage() {
     if (ips.length === 0) return
     setLoading(true)
     try {
-      const r = await fetch(`${API_URL}/self-healing/bulk-operation`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ips, action, permanent: isPermanent, notes: notes || `Bulk ${action}`, added_by: "admin", expires_hours: blockDuration }) })
+      const r = await authFetch(`${API_URL}/self-healing/bulk-operation`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ips, action, permanent: isPermanent, notes: notes || `Bulk ${action}`, added_by: "admin", expires_hours: blockDuration }) })
       if (r.ok) { setSelectedIPs(new Set()); setBulkIPs(""); setShowBulkModal(false); setBulkMode(false); fetchData() }
     } catch {} finally { setLoading(false) }
   }
@@ -83,7 +93,7 @@ export default function IPManagementPage() {
     if (!newIP.trim()) return; setLoading(true)
     try {
       const endpoint = isPermanent ? `${API_URL}/self-healing/trusted-ips/permanent` : `${API_URL}/self-healing/trusted-ips/add`
-      const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip: newIP.trim(), notes: notes.trim() || undefined, added_by: "admin", confidence: isPermanent ? 1.0 : 0.8, auto_added: false, metadata: {} }) })
+      const r = await authFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip: newIP.trim(), notes: notes.trim() || undefined, added_by: "admin", confidence: isPermanent ? 1.0 : 0.8, auto_added: false, metadata: {} }) })
       if (r.ok) { setNewIP(""); setNotes(""); fetchData() }
     } catch {} finally { setLoading(false) }
   }
@@ -95,13 +105,13 @@ export default function IPManagementPage() {
       const body = isPermanent
         ? { ip: newIP.trim(), notes: notes.trim() || "Manually blocked", added_by: "admin" }
         : { ip: newIP.trim(), block_reason: notes.trim() || "Manually blocked", confidence: 1.0, expires_hours: blockDuration, threat_category: "MANUAL_BLOCK", manual_override: true }
-      const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      const r = await authFetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
       if (r.ok) { setNewIP(""); setNotes(""); fetchData() }
     } catch {} finally { setLoading(false) }
   }
 
-  const handleRemoveWhitelist = async (ip: string) => { try { await fetch(`${API_URL}/self-healing/trusted-ips/${encodeURIComponent(ip)}`, { method: "DELETE" }); fetchData() } catch {} }
-  const handleUnblock = async (ip: string) => { try { await fetch(`${API_URL}/self-healing/blocked-ips/${encodeURIComponent(ip)}/unblock`, { method: "DELETE" }); fetchData() } catch {} }
+  const handleRemoveWhitelist = async (ip: string) => { try { const r = await authFetch(`${API_URL}/self-healing/trusted-ips/${encodeURIComponent(ip)}`, { method: "DELETE" }); if (r.ok) fetchData(); else console.error("[IPManagement] remove whitelist failed", r.status) } catch {} }
+  const handleUnblock = async (ip: string) => { try { const r = await authFetch(`${API_URL}/self-healing/blocked-ips/${encodeURIComponent(ip)}/unblock`, { method: "DELETE" }); if (r.ok) fetchData(); else console.error("[IPManagement] unblock failed", r.status) } catch {} }
   const toggleSelection = (ip: string) => { setSelectedIPs((prev) => { const u = new Set(prev); u.has(ip) ? u.delete(ip) : u.add(ip); return u }) }
 
   const filteredTrusted = trustedIPs.filter((ip) => ip.ip.includes(searchQuery) || ip.notes?.toLowerCase().includes(searchQuery.toLowerCase()))

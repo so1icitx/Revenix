@@ -30,7 +30,7 @@ class SimpleExplainer:
         packets: int = None,
         bytes_transferred: int = None,
         voting_details: Dict = None,
-        lstm_pattern: str = None,
+        sequential_pattern: str = None,
         features: Dict = None
     ) -> str:
         """Generate a clean, structured explanation of the threat."""
@@ -41,8 +41,8 @@ class SimpleExplainer:
         report_parts = []
         
         # Main threat explanation
-        if lstm_pattern:
-            report_parts.append(self._explain_lstm_pattern(lstm_pattern, src_ip, dst_ip, src_intel, features))
+        if sequential_pattern:
+            report_parts.append(self._explain_sequential_pattern(sequential_pattern, src_ip, dst_ip, src_intel, features))
         elif threat_category:
             report_parts.append(self._explain_by_category(
                 threat_category, src_ip, dst_ip, protocol, src_port, dst_port,
@@ -99,8 +99,8 @@ class SimpleExplainer:
         
         return "\n".join(parts)
     
-    def _explain_lstm_pattern(self, pattern: str, src_ip: str, dst_ip: str, intel: IPIntelligence, features: Dict = None) -> str:
-        """Explain LSTM-detected patterns."""
+    def _explain_sequential_pattern(self, pattern: str, src_ip: str, dst_ip: str, intel: IPIntelligence, features: Dict = None) -> str:
+        """Explain sequential-pattern detector findings."""
         
         patterns = {
             'port_scan': (

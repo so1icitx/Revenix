@@ -9,7 +9,7 @@
 - Installs Npcap silently if missing (from bundled installer)
 - Installs VC++ runtime if missing (bundled or auto-download)
 - Auto-selects a capture interface when `NETWORK_INTERFACE` is empty
-- Installs and starts scheduled task `RevenixCoreAgent`
+- Installs and starts scheduled tasks `RevenixCoreAgent` and `RevenixFirewallAgent` (unless firewall sync is disabled)
 
 ## Package Contents
 
@@ -19,7 +19,13 @@ Expected files in one folder:
 - `install.cmd`
 - `bootstrap-install.ps1`
 - `install-agent.ps1`
+- `control-agent.ps1`
+- `start.cmd`
+- `stop.cmd`
+- `restart.cmd`
+- `status.cmd`
 - `start-agent.ps1`
+- `firewall-sync.ps1`
 - `uninstall.cmd`
 - `uninstall-agent.ps1`
 - `agent.env` (create from `agent.env.example`)
@@ -32,6 +38,7 @@ Expected files in one folder:
 2. Set at minimum:
 - `API_URL=http://YOUR-MAIN-SERVER:8000`
 - `REDIS_URL=redis://YOUR-MAIN-SERVER:6379`
+- `INTERNAL_SERVICE_TOKEN=<same token as API>` (required when API internal auth is enabled)
 
 > Leave `NETWORK_INTERFACE=` empty unless you must pin one NIC.
 
@@ -54,17 +61,34 @@ Direct equivalent:
 
 ```powershell
 Get-ScheduledTask -TaskName RevenixCoreAgent
+Get-ScheduledTask -TaskName RevenixFirewallAgent
 Get-ScheduledTaskInfo -TaskName RevenixCoreAgent
+Get-ScheduledTaskInfo -TaskName RevenixFirewallAgent
 Get-Content "C:\ProgramData\RevenixAgent\logs\agent-supervisor.log" -Tail 50
+Get-Content "C:\ProgramData\RevenixAgent\logs\firewall-sync.log" -Tail 50
 ```
 
 Expected:
 
 - Task exists as `RevenixCoreAgent`
+- Firewall task exists as `RevenixFirewallAgent` (unless `FIREWALL_SYNC_ENABLED=false`)
 - Last task result is `0`
 - Supervisor log shows `Starting revenix-core.exe`
 
 > `Task Manager` is not the source of truth for startup services. Use scheduled task status and logs.
+
+## One-Click Task Control
+
+Use these in **Administrator PowerShell**:
+
+```powershell
+.\status.cmd
+.\stop.cmd
+.\start.cmd
+.\restart.cmd
+```
+
+These control scheduled tasks `RevenixCoreAgent` and `RevenixFirewallAgent`.
 
 ## Update / Reinstall
 

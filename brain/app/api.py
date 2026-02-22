@@ -124,7 +124,7 @@ async def get_device_profiles():
 
     profiles = []
     global_if_trained = active_auto_learner.anomaly_detector.is_trained if active_auto_learner else anomaly_detector.is_trained
-    global_training_threshold = active_auto_learner.training_threshold if active_auto_learner else 500
+    global_training_threshold = active_auto_learner.training_threshold if active_auto_learner else 200
     global_unique_flows = active_auto_learner.global_unique_flow_count if active_auto_learner else 0
     device_if_training_threshold = 25
 
@@ -162,7 +162,7 @@ async def get_device_profiles():
                 "required_flows": global_training_threshold,
                 "trained": global_if_trained
             },
-            "lstm_sequential": {
+            "sequential_pattern": {
                 "status": "active",
                 "patterns_detected": ["port_scan", "network_scan", "c2_beacon", "data_exfiltration", "brute_force"],
                 "trained": True

@@ -4,6 +4,8 @@ set -euo pipefail
 INSTALL_DIR="/opt/revenix-agent"
 CONTAINER_NAME="revenix-core-agent"
 IMAGE_NAME="revenix-core-agent:linux-amd64"
+FIREWALL_CONTAINER_NAME="revenix-firewall-agent"
+FIREWALL_IMAGE_NAME="revenix-firewall-agent:linux-amd64"
 REMOVE_IMAGE="false"
 PURGE_FILES="false"
 
@@ -20,6 +22,8 @@ Options:
   --install-dir PATH      Install directory (default: /opt/revenix-agent)
   --container-name NAME   Container name (default: revenix-core-agent)
   --image-name NAME:TAG   Image name (default: revenix-core-agent:linux-amd64)
+  --firewall-container-name NAME   Firewall container name (default: revenix-firewall-agent)
+  --firewall-image-name NAME:TAG   Firewall image name (default: revenix-firewall-agent:linux-amd64)
   --remove-image          Remove docker image too
   --purge-files           Remove install directory too
   --help                  Show help
@@ -44,6 +48,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --image-name)
       IMAGE_NAME="${2:-}"
+      shift 2
+      ;;
+    --firewall-container-name)
+      FIREWALL_CONTAINER_NAME="${2:-}"
+      shift 2
+      ;;
+    --firewall-image-name)
+      FIREWALL_IMAGE_NAME="${2:-}"
       shift 2
       ;;
     --remove-image)
@@ -71,8 +83,13 @@ if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
 
+if docker ps -a --format '{{.Names}}' | grep -Fxq "$FIREWALL_CONTAINER_NAME"; then
+  docker rm -f "$FIREWALL_CONTAINER_NAME" >/dev/null 2>&1 || true
+fi
+
 if [[ "$REMOVE_IMAGE" == "true" ]]; then
   docker image rm -f "$IMAGE_NAME" >/dev/null 2>&1 || true
+  docker image rm -f "$FIREWALL_IMAGE_NAME" >/dev/null 2>&1 || true
 fi
 
 if [[ "$PURGE_FILES" == "true" && -d "$INSTALL_DIR" ]]; then
@@ -80,4 +97,3 @@ if [[ "$PURGE_FILES" == "true" && -d "$INSTALL_DIR" ]]; then
 fi
 
 printf 'Revenix Linux agent removed.\n'
-

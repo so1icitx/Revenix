@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> Start with evidence, not guesses: scheduled task state, core logs, API reachability, and Redis reachability.
+> Start with evidence, not guesses: scheduled task state, core/firewall logs, API reachability, and Redis reachability.
 
 ## 1) No Flows Appearing
 
@@ -8,14 +8,18 @@ Checks:
 
 ```powershell
 Get-ScheduledTask -TaskName RevenixCoreAgent
+Get-ScheduledTask -TaskName RevenixFirewallAgent
 Get-ScheduledTaskInfo -TaskName RevenixCoreAgent
+Get-ScheduledTaskInfo -TaskName RevenixFirewallAgent
 Get-Content "C:\ProgramData\RevenixAgent\logs\agent-supervisor.log" -Tail 100
+Get-Content "C:\ProgramData\RevenixAgent\logs\firewall-sync.log" -Tail 100
 ```
 
 What to confirm:
 
 - `LastTaskResult` is `0`
 - `agent-supervisor.log` shows repeated start attempts without fatal errors
+- `firewall-sync.log` shows periodic sync attempts (if firewall sync is enabled)
 - `agent.env` points to correct `API_URL` and `REDIS_URL`
 
 ## 2) Task Shows `Ready` Instead of `Running`

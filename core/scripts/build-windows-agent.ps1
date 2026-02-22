@@ -200,9 +200,15 @@ Copy-Item $binary (Join-Path $outDir "revenix-core.exe") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\bootstrap-install.ps1") (Join-Path $outDir "bootstrap-install.ps1") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\install.cmd") (Join-Path $outDir "install.cmd") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\install-agent.ps1") (Join-Path $outDir "install-agent.ps1") -Force
+Copy-Item (Join-Path $repoRoot "agents\windows\control-agent.ps1") (Join-Path $outDir "control-agent.ps1") -Force
+Copy-Item (Join-Path $repoRoot "agents\windows\start.cmd") (Join-Path $outDir "start.cmd") -Force
+Copy-Item (Join-Path $repoRoot "agents\windows\stop.cmd") (Join-Path $outDir "stop.cmd") -Force
+Copy-Item (Join-Path $repoRoot "agents\windows\restart.cmd") (Join-Path $outDir "restart.cmd") -Force
+Copy-Item (Join-Path $repoRoot "agents\windows\status.cmd") (Join-Path $outDir "status.cmd") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\uninstall.cmd") (Join-Path $outDir "uninstall.cmd") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\uninstall-agent.ps1") (Join-Path $outDir "uninstall-agent.ps1") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\start-agent.ps1") (Join-Path $outDir "start-agent.ps1") -Force
+Copy-Item (Join-Path $repoRoot "agents\windows\firewall-sync.ps1") (Join-Path $outDir "firewall-sync.ps1") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\agent.env.example") (Join-Path $outDir "agent.env.example") -Force
 Copy-Item (Join-Path $repoRoot "agents\windows\README.md") (Join-Path $outDir "README.md") -Force
 

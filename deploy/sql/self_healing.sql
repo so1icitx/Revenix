@@ -250,7 +250,7 @@ INSERT INTO model_config (config_key, config_value, config_type, description, up
     ('contamination_rate_iot', '0.02', 'float', 'Contamination rate for IoT devices (2%)', 'system'),
     ('contamination_rate_workstations', '0.015', 'float', 'Contamination rate for workstations (1.5%)', 'system'),
     ('alert_threshold', '0.85', 'float', 'Minimum risk score to create alert', 'system'),
-    ('training_threshold', '500', 'integer', 'Flows required before training ML models', 'system'),
+    ('training_threshold', '200', 'integer', 'Flows required before training ML models', 'system'),
     ('auto_block_threshold', '0.95', 'float', 'Immediate block confidence threshold', 'system'),
     ('suspicious_threshold', '0.75', 'float', 'Confidence threshold to start suspicious tracking', 'system'),
     ('auto_block_enabled', 'true', 'boolean', 'Whether auto-blocking is enabled', 'system'),

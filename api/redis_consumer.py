@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import time
+import os
 from datetime import datetime
 from typing import Optional
 import redis.asyncio as aioredis
@@ -11,6 +12,7 @@ from app.websocket_broadcast import broadcast_alert
 import logging
 
 logger = logging.getLogger(__name__)
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
 class LearningPhaseChecker:
     """Check if system is in learning/active mode before processing flows"""
@@ -320,7 +322,7 @@ async def consume_dpi_results():
     last_id = "0"
     while True:
         try:
-            redis = await aioredis.from_url("redis://redis:6379")
+            redis = await aioredis.from_url(REDIS_URL)
             print("[DPI Consumer] ✓ Connected to Redis")
             while True:
                 if not await learning_checker.is_capturing_enabled():
@@ -360,7 +362,7 @@ async def start_redis_consumer():
     try:
         while True:
             try:
-                redis = await aioredis.from_url("redis://redis:6379")
+                redis = await aioredis.from_url(REDIS_URL)
                 print("[Consumer] ✓ Connected to Redis successfully")
 
                 last_id = "0"

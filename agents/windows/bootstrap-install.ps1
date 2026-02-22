@@ -5,12 +5,18 @@ param(
     [string]$VcRedistInstallerPath = "",
     [string]$InstallDir = "C:\ProgramData\RevenixAgent",
     [string]$TaskName = "RevenixCoreAgent",
+    [string]$FirewallTaskName = "RevenixFirewallAgent",
     [string]$ApiUrl = "",
     [string]$RedisUrl = "",
     [string]$RedisPassword = "",
+    [string]$InternalServiceToken = "",
+    [string]$ApiBearerToken = "",
     [string]$NetworkInterface = "",
     [ValidateSet("", "true", "false")]
     [string]$PromiscuousMode = "",
+    [ValidateSet("", "true", "false")]
+    [string]$FirewallSyncEnabled = "",
+    [int]$FirewallSyncInterval = 0,
     [switch]$SkipNpcapInstall,
     [switch]$SkipVcRedistInstall
 )
@@ -132,6 +138,16 @@ function Resolve-Setting {
         return [string]$Config[$Key]
     }
     return $Default
+}
+
+function Test-Truthy {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return @("1", "true", "yes", "on") -contains $Value.Trim().ToLowerInvariant()
 }
 
 function Is-UnwantedInterface {
@@ -372,9 +388,24 @@ $config = Read-EnvFile -PathValue $resolvedConfigPath
 $finalApiUrl = Resolve-Setting -Key "API_URL" -Override $ApiUrl -Config $config
 $finalRedisUrl = Resolve-Setting -Key "REDIS_URL" -Override $RedisUrl -Config $config
 $finalRedisPassword = Resolve-Setting -Key "REDIS_PASSWORD" -Override $RedisPassword -Config $config -Default ""
+$finalInternalServiceToken = Resolve-Setting -Key "INTERNAL_SERVICE_TOKEN" -Override $InternalServiceToken -Config $config -Default ""
+$finalApiBearerToken = Resolve-Setting -Key "API_BEARER_TOKEN" -Override $ApiBearerToken -Config $config -Default ""
 $finalNetworkInterface = Resolve-Setting -Key "NETWORK_INTERFACE" -Override $NetworkInterface -Config $config -Default ""
 $finalPromiscuousMode = Resolve-Setting -Key "PROMISCUOUS_MODE" -Override $PromiscuousMode -Config $config -Default "true"
+$finalFirewallSyncEnabled = Resolve-Setting -Key "FIREWALL_SYNC_ENABLED" -Override $FirewallSyncEnabled -Config $config -Default "true"
+$firewallSyncIntervalOverride = ""
+if ($FirewallSyncInterval -gt 0) {
+    $firewallSyncIntervalOverride = [string]$FirewallSyncInterval
+}
+$finalFirewallSyncInterval = Resolve-Setting -Key "FIREWALL_SYNC_INTERVAL" -Override $firewallSyncIntervalOverride -Config $config -Default "30"
 $finalNetworkInterface = Normalize-NetworkInterface -Value $finalNetworkInterface
+
+[int]$parsedFirewallSyncInterval = 30
+if (-not [int]::TryParse([string]$finalFirewallSyncInterval, [ref]$parsedFirewallSyncInterval)) {
+    $parsedFirewallSyncInterval = 30
+}
+if ($parsedFirewallSyncInterval -lt 5) { $parsedFirewallSyncInterval = 5 }
+if ($parsedFirewallSyncInterval -gt 3600) { $parsedFirewallSyncInterval = 3600 }
 
 if ([string]::IsNullOrWhiteSpace($finalApiUrl)) {
     throw "API_URL is required (set in agent.env or pass -ApiUrl)."
@@ -463,10 +494,15 @@ if (-not (Test-Path $installScript)) {
     -ApiUrl $finalApiUrl `
     -RedisUrl $finalRedisUrl `
     -RedisPassword $finalRedisPassword `
+    -InternalServiceToken $finalInternalServiceToken `
+    -ApiBearerToken $finalApiBearerToken `
     -NetworkInterface $finalNetworkInterface `
     -PromiscuousMode $finalPromiscuousMode `
+    -FirewallSyncEnabled $finalFirewallSyncEnabled `
+    -FirewallSyncInterval $parsedFirewallSyncInterval `
     -InstallDir $InstallDir `
-    -TaskName $TaskName
+    -TaskName $TaskName `
+    -FirewallTaskName $FirewallTaskName
 
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if (-not $task) {
@@ -474,16 +510,29 @@ if (-not $task) {
 }
 
 $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
+$firewallTask = Get-ScheduledTask -TaskName $FirewallTaskName -ErrorAction SilentlyContinue
+$firewallTaskInfo = Get-ScheduledTaskInfo -TaskName $FirewallTaskName -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Bootstrap complete."
 Write-Host "Config file: $resolvedConfigPath"
 Write-Host "API_URL: $finalApiUrl"
 Write-Host "REDIS_URL: $finalRedisUrl"
+Write-Host "FIREWALL_SYNC_ENABLED: $finalFirewallSyncEnabled"
+Write-Host "FIREWALL_SYNC_INTERVAL: $parsedFirewallSyncInterval"
 if (-not [string]::IsNullOrWhiteSpace($finalNetworkInterface)) {
     Write-Host "NETWORK_INTERFACE: $finalNetworkInterface"
 }
-Write-Host "Task state: $($task.State)"
+Write-Host "Core task state: $($task.State)"
 if ($taskInfo) {
-    Write-Host "Last run time: $($taskInfo.LastRunTime)"
+    Write-Host "Core task last run: $($taskInfo.LastRunTime)"
+}
+if (Test-Truthy -Value $finalFirewallSyncEnabled) {
+    if (-not $firewallTask) {
+        throw "Install finished, but firewall task '$FirewallTaskName' was not found."
+    }
+    Write-Host "Firewall task state: $($firewallTask.State)"
+    if ($firewallTaskInfo) {
+        Write-Host "Firewall task last run: $($firewallTaskInfo.LastRunTime)"
+    }
 }

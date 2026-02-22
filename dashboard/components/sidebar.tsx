@@ -9,7 +9,6 @@ import {
   Activity,
   GitBranch,
   Shield,
-  Brain,
   Laptop,
   Settings,
   Heart,
@@ -27,7 +26,7 @@ const navSections = [
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard },
       { href: "/live-traffic", label: "Live Traffic", icon: Activity },
-      { href: "/threat-map", label: "Threat Map", icon: Globe },
+      { href: "/threat-map", label: "Threat Intelligence", icon: Globe },
     ],
   },
   {
@@ -42,7 +41,6 @@ const navSections = [
     label: "System",
     items: [
       { href: "/alerting", label: "Alerting", icon: Bell },
-      { href: "/ai-decisions", label: "AI Decisions", icon: Brain },
       { href: "/endpoints", label: "Endpoints", icon: Laptop },
       { href: "/system-health", label: "System Health", icon: Heart },
     ],
@@ -154,11 +152,6 @@ export function Sidebar() {
           <Settings className={`w-[18px] h-[18px] flex-shrink-0 ${pathname === "/settings" ? "text-primary" : ""}`} />
           {!sidebarCollapsed && <span className="text-[13px] font-medium">Settings</span>}
         </Link>
-        {!sidebarCollapsed && (
-          <div className="mt-3 px-3">
-            <p className="text-[10px] text-muted-foreground">v1.0.0</p>
-          </div>
-        )}
       </div>
     </aside>
   )

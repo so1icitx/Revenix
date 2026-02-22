@@ -9,6 +9,7 @@
 - `uninstall.sh`
 - `agent.env.example`
 - `revenix-core-image.tar` (produced by build script)
+- `revenix-firewall-image.tar` (firewall sync sidecar image)
 
 ## Build Bundle (operator side)
 
@@ -30,6 +31,7 @@ Output:
 3. Set:
 - `API_URL=http://<main-server>:8000`
 - `REDIS_URL=redis://<main-server>:6379`
+- `INTERNAL_SERVICE_TOKEN=<same token as server>` (required when API internal auth is enabled)
 4. Run:
 
 ```bash
@@ -44,6 +46,8 @@ sudo ./install.sh
 ```bash
 docker ps --filter name=revenix-core-agent
 docker logs -f revenix-core-agent
+docker ps --filter name=revenix-firewall-agent
+docker logs -f revenix-firewall-agent
 ```
 
 ## Update
@@ -59,4 +63,3 @@ sudo ./install.sh
 ```bash
 sudo ./uninstall.sh --purge-files
 ```
-

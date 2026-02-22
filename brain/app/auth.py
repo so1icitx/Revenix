@@ -7,12 +7,14 @@ from fastapi import HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 import os
+import secrets
 from typing import Optional
 from functools import wraps
 
 # Configuration - shared with main API (must match API's JWT_SECRET_KEY)
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "revenix-secret-key-change-in-production")
 ALGORITHM = "HS256"
+INTERNAL_SERVICE_TOKEN = os.environ.get("INTERNAL_SERVICE_TOKEN", "").strip()
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
@@ -36,13 +38,29 @@ def decode_token(token: str) -> Optional[dict]:
         raise AuthError(f"Invalid token: {str(e)}", 401)
 
 
+def _authenticate_internal_service(request: Optional[Request]) -> Optional[dict]:
+    if request is None or not INTERNAL_SERVICE_TOKEN:
+        return None
+    provided_token = request.headers.get("x-internal-token", "").strip()
+    if not provided_token:
+        return None
+    if not secrets.compare_digest(provided_token, INTERNAL_SERVICE_TOKEN):
+        return None
+    return {"sub": "internal-service", "role": "admin", "internal": True}
+
+
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> dict:
     """
     Dependency to get current authenticated user from JWT token.
     Use as: user = Depends(get_current_user)
     """
+    internal_user = _authenticate_internal_service(request)
+    if internal_user is not None:
+        return internal_user
+
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing authentication token")
     
@@ -56,11 +74,16 @@ async def get_current_user(
 
 
 async def get_optional_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Optional[dict]:
     """
     Dependency to optionally get current user (for endpoints that work with or without auth).
     """
+    internal_user = _authenticate_internal_service(request)
+    if internal_user is not None:
+        return internal_user
+
     if credentials is None:
         return None
     
@@ -94,8 +117,13 @@ def require_role(required_role: str):
             return {"user": user}
     """
     async def role_checker(
+        request: Request,
         credentials: HTTPAuthorizationCredentials = Depends(security)
     ) -> dict:
+        internal_user = _authenticate_internal_service(request)
+        if internal_user is not None:
+            return internal_user
+
         if credentials is None:
             raise HTTPException(status_code=401, detail="Missing authentication token")
         

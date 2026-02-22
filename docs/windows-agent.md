@@ -21,6 +21,7 @@ Output:
 3. Set:
 - `API_URL=http://<main-server>:8000`
 - `REDIS_URL=redis://<main-server>:6379`
+- `INTERNAL_SERVICE_TOKEN=<same token as API>` (required when API internal auth is enabled)
 4. In Administrator PowerShell:
 
 ```powershell
@@ -32,8 +33,11 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 
 ```powershell
 Get-ScheduledTask -TaskName RevenixCoreAgent
+Get-ScheduledTask -TaskName RevenixFirewallAgent
 Get-ScheduledTaskInfo -TaskName RevenixCoreAgent
+Get-ScheduledTaskInfo -TaskName RevenixFirewallAgent
 Get-Content "C:\ProgramData\RevenixAgent\logs\agent-supervisor.log" -Tail 50
+Get-Content "C:\ProgramData\RevenixAgent\logs\firewall-sync.log" -Tail 50
 ```
 
 ## Behavior Notes

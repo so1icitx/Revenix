@@ -8,13 +8,16 @@ import asyncio
 import subprocess
 import platform
 import time
+import ipaddress
 from typing import List, Dict, Set, Optional
 from enum import Enum
 import aiohttp
+from .internal_api import get_api_base_url, get_internal_headers
 
 logger = logging.getLogger(__name__)
 
-API_URL = "http://api:8000"
+API_URL = get_api_base_url()
+INTERNAL_HEADERS = get_internal_headers()
 
 
 class FirewallPlatform(Enum):
@@ -101,6 +104,31 @@ class CrossPlatformFirewallManager:
         else:
             logger.warning(f"[FirewallManager] Unsupported OS: {os_name}")
             return FirewallPlatform.UNSUPPORTED
+
+    @staticmethod
+    def _validate_ip(ip: str) -> bool:
+        try:
+            ipaddress.ip_address(ip)
+            return True
+        except ValueError:
+            logger.error(f"[FirewallManager] Invalid IP address: {ip}")
+            return False
+
+    @staticmethod
+    def _ensure_iptables_jump(chain: str):
+        """Insert jump only when missing to avoid duplicate rules on restarts."""
+        exists = subprocess.run(
+            ["iptables", "-C", chain, "-j", "REVENIX"],
+            check=False,
+            capture_output=True,
+        )
+        if exists.returncode == 0:
+            return
+        subprocess.run(
+            ["iptables", "-I", chain, "-j", "REVENIX"],
+            check=False,
+            capture_output=True,
+        )
     
     async def initialize_firewall(self) -> bool:
         """Initialize the firewall based on platform."""
@@ -190,19 +218,9 @@ class CrossPlatformFirewallManager:
                 capture_output=True
             )
             
-            # Insert jump to our chain at the beginning of INPUT
-            subprocess.run(
-                ["iptables", "-I", "INPUT", "-j", "REVENIX"],
-                check=False,
-                capture_output=True
-            )
-            
-            # Insert jump to our chain at the beginning of OUTPUT
-            subprocess.run(
-                ["iptables", "-I", "OUTPUT", "-j", "REVENIX"],
-                check=False,
-                capture_output=True
-            )
+            # Ensure jump to custom chain exists exactly once.
+            self._ensure_iptables_jump("INPUT")
+            self._ensure_iptables_jump("OUTPUT")
             
             logger.info("[FirewallManager] ✅ iptables initialized (bidirectional blocking)")
             return True
@@ -238,6 +256,9 @@ class CrossPlatformFirewallManager:
             ip: IP address to block
             direction: "incoming", "outgoing", or "both"
         """
+        if not self._validate_ip(ip):
+            return False
+
         if not self.enable_blocking:
             logger.info(f"[FirewallManager] [SIMULATION] Would block IP: {ip} ({direction})")
             return True
@@ -268,12 +289,7 @@ class CrossPlatformFirewallManager:
     
     async def _block_ip_nftables(self, ip: str) -> bool:
         """Block IP using nftables (handles both directions with the set)."""
-        # Validate IP address before using in subprocess
-        try:
-            import ipaddress
-            ipaddress.ip_address(ip)  # Raises ValueError if invalid
-        except ValueError:
-            logger.error(f"[FirewallManager] Invalid IP address: {ip}")
+        if not self._validate_ip(ip):
             return False
         
         result = subprocess.run(
@@ -342,6 +358,9 @@ class CrossPlatformFirewallManager:
     
     async def unblock_ip(self, ip: str) -> bool:
         """Unblock an IP address."""
+        if not self._validate_ip(ip):
+            return False
+
         if not self.enable_blocking:
             logger.info(f"[FirewallManager] [SIMULATION] Would unblock IP: {ip}")
             return True
@@ -429,7 +448,7 @@ class CrossPlatformFirewallManager:
     async def get_database_blocked_ips(self) -> List[Dict]:
         """Fetch currently blocked IPs from database API."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 async with session.get(f"{API_URL}/self-healing/blocked-ips") as resp:
                     if resp.status == 200:
                         return await resp.json()
@@ -443,7 +462,7 @@ class CrossPlatformFirewallManager:
     async def _log_sync_action(self, action: str, ip: str, success: bool, error_msg: str = None, execution_time_ms: int = 0):
         """Log firewall sync action to database."""
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=INTERNAL_HEADERS) as session:
                 params = {
                     "action": action,
                     "ip": ip,

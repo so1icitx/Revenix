@@ -1,185 +1,172 @@
 # Revenix - AI-Powered Network Security Platform
 
-> **Intelligent threat detection and autonomous response for modern networks**
-
-
+Intelligent threat detection and autonomous response for modern networks.
 
 ## Overview
 
-Revenix is an advanced Network Intrusion Detection and Prevention System (NIDPS) that combines **Deep Packet Inspection** with **5-model Machine Learning ensemble** to automatically detect and respond to cyber threats. Built for the **NOIT Bulgaria 2026** competition.
+Revenix is a network intrusion detection and prevention platform that combines deep packet inspection with a 5-model ML ensemble.
 
-### Key Features
-
-- ** Deep Packet Inspection (DPI)**
-  - JA3/JA3S TLS fingerprinting for malware detection
-  - DNS tunneling detection via entropy analysis
-  - SSH brute-force attempt tracking
-  - Protocol anomaly detection
-
-- ** 5-Model ML Ensemble**
-  - Isolation Forest (outlier detection)
-  - Autoencoder (reconstruction-based anomaly)
-  - LSTM Sequential Detector (time-series patterns)
+Core capabilities:
+- Deep Packet Inspection (DPI)
+  - JA3/JA3S TLS fingerprinting
+  - DNS tunneling detection
+  - SSH brute-force pattern detection
+- 5-model ML ensemble
+  - Isolation Forest
+  - Autoencoder
+  - Sequential Pattern Detector
   - Baseline Deviation Analyzer
-  - Per-Device Behavioral Profiling
+  - Per-device Behavioral Profiling
+- Self-healing response
+  - Auto-block and manual block workflows
+  - Temporary and permanent block lists
+  - Cross-platform firewall synchronization
+- Real-time dashboard
+  - Live traffic and flow views
+  - Threat management and IP management
+  - Alerting configuration
 
-- ** Autonomous Response (Self-Healing)**
-  - Automatic threat blocking (configurable)
-  - Smart whitelisting of benign traffic
-  - Temporary vs. permanent firewall rules
-  - Rule recommendation system
-
-- ** Real-Time Dashboard**
-  - Live traffic visualization
-  - WebSocket-powered updates
-  - Interactive threat map (geolocation)
-  - Alert management and acknowledgement
-  - System health monitoring
-
-##  Architecture
+## Architecture
 
 ```mermaid
 graph LR
     A[Network Traffic] --> B[Core - Rust]
-    B --> C[Redis Stream]
+    B --> C[Redis Streams]
     C --> D[Brain - Python ML]
     C --> E[API - FastAPI]
     D --> E
     E --> F[Dashboard - Next.js]
-    D --> G[Firewall Manager]
+    D --> G[Firewall Sync]
 ```
 
-### Components
+Components:
+- `core/` - packet capture, flow aggregation, DPI
+- `brain/` - ML scoring, ensemble voting, self-healing decisions
+- `api/` - persistence, auth, REST endpoints, notifications
+- `dashboard/` - operator UI
+- `deploy/sql/` - schema and seed scripts
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Core** | Rust + libpcap | Packet capture, flow aggregation, DPI |
-| **Brain** | Python + scikit-learn/TensorFlow | ML-based threat detection |
-| **API** | FastAPI + PostgreSQL | Data persistence, authentication, WebSocket |
-| **Dashboard** | Next.js 16 + Tailwind CSS | Real-time monitoring UI |
-| **Redis** | Redis Streams | High-performance message broker |
+## Quick Start
 
-##  Quick Start
+Prerequisites:
+- Docker + Docker Compose
+- 4 GB RAM minimum (8 GB recommended)
+- For packet capture:
+  - Linux Docker host for containerized core capture, or
+  - Windows native agent bundle
 
-### Prerequisites
+### Linux Host (all-in-one with Docker core capture)
 
-- Docker & Docker Compose
-- Linux OS (for packet capture - requires `NET_ADMIN` capability) or Windows 0S
-- At least 4GB RAM recommended for the host PC
-
-### Windows Agent Deployment
-
-For enterprise Windows endpoints, deploy a native `core` agent instead of Docker Desktop packet capture.
-
-1. Build Windows bundle from `core`:
-   ```powershell
-   cd core
-   .\scripts\build-windows-agent.ps1
-   ```
-2. Copy `core\dist\windows-agent` to the Windows endpoint.
-3. Copy `agent.env.example` to `agent.env` and set `API_URL` / `REDIS_URL`.
-4. (Optional, recommended) place Npcap installer at `dependencies\npcap-installer.exe`.
-5. (Optional) place VC++ runtime installer at `dependencies\vc_redist.x64.exe`.
-6. Install as Administrator:
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass -Force
-   .\install.cmd
-   ```
-7. Details, manual install, and uninstall steps are in `agents/windows/README.md`.
-
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/so1icitx/Revenix.git
-   cd Revenix
-   ```
-
-2. **Start all services**
-   ```bash
-   # linux
-   docker-compose up --build
-
-   # windows
-   python3 start-revenix.py 
-   ```
-   
-3. **Access the dashboard**
-   - Open browser: http://localhost:3000
-   - Default credentials: _Set up on first run_
-
-
-##  Troubleshooting
-
-### Common Issues
-
-**"Permission denied" on packet capture**:
 ```bash
-# Ensure Core container has NET_ADMIN capability
-# Check docker-compose.yml has:
-cap_add:
-  - NET_ADMIN
+git clone https://github.com/so1icitx/revenix.git
+cd revenix
+docker compose up -d --build
 ```
 
-**Models not training**:
-- Check logs: `docker-compose logs brain`
-- Verify flows are being captured: `docker-compose logs core`
-- Ensure learning threshold met (default 200 flows)
+Open:
+- Dashboard: `http://localhost:3000`
+- API docs: `http://localhost:8000/docs`
 
-**Dashboard not loading**:
+### Windows Host (control plane + native core agent)
+
+```powershell
+git clone https://github.com/so1icitx/revenix.git
+cd revenix
+python start-revenix.py
+```
+
+`start-revenix.py` starts the control plane and prepares/runs the Windows agent flow.
+
+## Endpoint Agent Deployment
+
+### Windows Endpoint Agent
+
+1. Build bundle (from repo root):
+```powershell
+cd core
+.\scripts\build-windows-agent.ps1
+```
+2. Copy `core\dist\windows-agent` to the endpoint.
+3. Copy `agent.env.example` to `agent.env` and set:
+- `API_URL`
+- `REDIS_URL`
+- `REDIS_PASSWORD`
+- `INTERNAL_SERVICE_TOKEN`
+4. Install as Administrator:
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\install.cmd
+```
+
+Agent task controls (Admin shell):
+```powershell
+.\status.cmd
+.\stop.cmd
+.\start.cmd
+.\restart.cmd
+```
+
+### Linux Endpoint Agent
+
+1. Build bundle (from repo root):
+```powershell
+cd core
+.\scripts\build-linux-agent.ps1
+```
+2. Copy `core/dist/linux-agent` to endpoint.
+3. Configure `agent.env`.
+4. Install:
 ```bash
-# Check API is running
-curl http://localhost:8000/health
-
-# Verify database migration
-docker-compose exec api python -c "from db import engine; print('DB OK')"
+sudo ./install.sh
 ```
 
-### Debug Mode
+## Authentication and Access
 
-Enable verbose logging:
+- First account is created via signup.
+- API endpoints require authentication after initial setup.
+- Internal service calls use `X-Internal-Token` (`INTERNAL_SERVICE_TOKEN`).
+
+## Alerting Channels
+
+Supported integration types:
+- `slack`
+- `discord`
+- `email`
+- `pagerduty`
+- generic `webhook`
+
+Configure in Dashboard -> Alerting.
+
+## Learning and Training
+
+- Initial training threshold default: `200` flows (configurable).
+- Start learning from the dashboard/system controls.
+- After threshold is reached, models train and system can run in active mode.
+
+## Testing
+
+Brain tests:
 ```bash
-# docker-compose.yml
-environment:
-  - LOG_LEVEL=DEBUG
+cd brain
+pytest tests -v
 ```
 
+Dashboard tests:
+```bash
+cd dashboard
+npm install
+npm test
+```
 
-##  Security Considerations
+## Security Notes
 
-### Production Deployment
-
- **This is a research/competition project. For production use**:
-
-1. **Change default credentials** in all services
-2. **Use strong SECRET_KEY** for JWT signing
-3. **Enable HTTPS** (add reverse proxy like nginx)
-4. **Restrict API access** (firewall rules, IP whitelisting)
-5. **Review auto-block settings** (test in monitor-only mode first)
-6. **Regular backups** of database and model files
-7. **Monitor system logs** for anomalies
-
-### Known Limitations
-
-- Currently monitors single interface (multi-interface requires multiple Core instances)
-- JA3 database needs periodic updates for new malware families
-- High traffic (>10k pps) may require hardware acceleration
-- No built-in email/SMS alerting (webhook integration available)
+Before public/production deployment:
+- Replace default secrets (`JWT_SECRET_KEY`, `INTERNAL_SERVICE_TOKEN`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD`).
+- Restrict network exposure and firewall access.
+- Enable HTTPS via reverse proxy.
+- Validate auto-block policy in monitor-first rollout.
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 - see [LICENSE](LICENSE) file for details.
-
-
-##  Acknowledgments
-
-- JA3 Malware Database: [Abuse.ch SSL Blacklist](https://sslbl.abuse.ch/)
-- ML Techniques: Inspired by Darktrace, Vectra AI
-- Icons: [Lucide React](https://lucide.dev/)
-- UI Components: [shadcn/ui](https://ui.shadcn.com/)
-
----
-
-** If you find this project useful, please star the repository!**
-
-For questions or support: [Open an issue](https://github.com/so1icitx/Revenix/issues)
+This project is licensed under GNU General Public License v3.0.
+See `LICENSE`.

@@ -129,16 +129,21 @@ fn pick_capture_device(requested_interface: Option<String>) -> Result<Device> {
     }
 }
 
+fn with_internal_service_header(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match std::env::var("INTERNAL_SERVICE_TOKEN") {
+        Ok(token) if !token.trim().is_empty() => builder.header("X-Internal-Token", token.trim()),
+        _ => builder,
+    }
+}
+
 async fn check_learning_phase() -> Result<bool> {
     let client = reqwest::Client::new();
     let api_url = std::env::var("API_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
 
-    match client
-        .get(&format!("{}/system/state", api_url))
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-        .await
-    {
+    let request = with_internal_service_header(client.get(&format!("{}/system/state", api_url)))
+        .timeout(std::time::Duration::from_secs(3));
+
+    match request.send().await {
         Ok(resp) => {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 let phase = json["learning_phase"].as_str().unwrap_or("idle");
@@ -162,13 +167,11 @@ async fn register_device(agent_id: &str, hostname: &str) -> Result<()> {
         "ip": "auto"
     });
 
-    match client
-        .post(&format!("{}/register", api_url))
+    let request = with_internal_service_header(client.post(&format!("{}/register", api_url)))
         .json(&body)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
+        .timeout(std::time::Duration::from_secs(5));
+
+    match request.send().await {
         Ok(resp) => {
             if resp.status().is_success() {
                 println!("Registered device successfully");

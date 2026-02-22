@@ -8,6 +8,7 @@ import { TopBar } from "./top-bar"
 import AuthGuard from "./auth-guard"
 import { ErrorBoundary } from "./error-boundary"
 import { CommandPalette } from "./command-palette"
+import { API_URL } from "../lib/api-config"
 
 interface AppShellContextType {
   sidebarCollapsed: boolean
@@ -34,6 +35,48 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const saved = localStorage.getItem("revenix_sidebar_collapsed")
     if (saved === "true") setSidebarCollapsed(true)
+  }, [])
+
+  useEffect(() => {
+    const existingFetch = window.fetch.bind(window)
+    const brainApiUrl = API_URL.replace(":8000", ":8001")
+
+    const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      try {
+        const requestUrl =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+
+        const isInternalApiRequest =
+          requestUrl.startsWith(API_URL) || requestUrl.startsWith(brainApiUrl)
+
+        if (!isInternalApiRequest) {
+          return existingFetch(input, init)
+        }
+
+        const token = sessionStorage.getItem("revenix_token")
+        if (!token) {
+          return existingFetch(input, init)
+        }
+
+        const headers = new Headers(init?.headers)
+        if (!headers.has("Authorization")) {
+          headers.set("Authorization", `Bearer ${token}`)
+        }
+
+        return existingFetch(input, { ...init, headers })
+      } catch {
+        return existingFetch(input, init)
+      }
+    }
+
+    window.fetch = patchedFetch
+    return () => {
+      window.fetch = existingFetch
+    }
   }, [])
 
   useEffect(() => {

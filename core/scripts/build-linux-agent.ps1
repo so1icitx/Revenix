@@ -2,6 +2,7 @@ param(
     [ValidateSet("amd64")]
     [string]$Arch = "amd64",
     [string]$ImageName = "revenix-core-agent:linux-amd64",
+    [string]$FirewallImageName = "revenix-firewall-agent:linux-amd64",
     [switch]$SkipImageBuild
 )
 
@@ -29,9 +30,20 @@ if (-not $SkipImageBuild) {
     if ($LASTEXITCODE -ne 0) {
         throw "docker build failed with exit code $LASTEXITCODE."
     }
+
+    $firewallDockerfile = Join-Path $linuxAgentRoot "Dockerfile.firewall"
+    if (-not (Test-Path $firewallDockerfile)) {
+        throw "Firewall Dockerfile missing: $firewallDockerfile"
+    }
+
+    Write-Host "Building Revenix Firewall Linux image (linux/$Arch)..."
+    & $docker.Source build --platform "linux/$Arch" -f $firewallDockerfile -t $FirewallImageName $linuxAgentRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "firewall docker build failed with exit code $LASTEXITCODE."
+    }
 }
 else {
-    Write-Host "Skipping docker build. Existing local image must exist: $ImageName"
+    Write-Host "Skipping docker build. Existing local images must exist: $ImageName and $FirewallImageName"
 }
 
 $imageTar = Join-Path $outDir "revenix-core-image.tar"
@@ -41,10 +53,19 @@ if ($LASTEXITCODE -ne 0) {
     throw "docker save failed with exit code $LASTEXITCODE."
 }
 
+$firewallImageTar = Join-Path $outDir "revenix-firewall-image.tar"
+Write-Host "Exporting firewall image tar: $firewallImageTar"
+& $docker.Source save -o $firewallImageTar $FirewallImageName
+if ($LASTEXITCODE -ne 0) {
+    throw "firewall docker save failed with exit code $LASTEXITCODE."
+}
+
 Copy-Item (Join-Path $linuxAgentRoot "install.sh") (Join-Path $outDir "install.sh") -Force
 Copy-Item (Join-Path $linuxAgentRoot "start-agent.sh") (Join-Path $outDir "start-agent.sh") -Force
 Copy-Item (Join-Path $linuxAgentRoot "uninstall.sh") (Join-Path $outDir "uninstall.sh") -Force
 Copy-Item (Join-Path $linuxAgentRoot "agent.env.example") (Join-Path $outDir "agent.env.example") -Force
+Copy-Item (Join-Path $linuxAgentRoot "firewall-sync.py") (Join-Path $outDir "firewall-sync.py") -Force
+Copy-Item (Join-Path $linuxAgentRoot "Dockerfile.firewall") (Join-Path $outDir "Dockerfile.firewall") -Force
 Copy-Item (Join-Path $linuxAgentRoot "README.md") (Join-Path $outDir "README.md") -Force
 
 $archive = Join-Path $coreRoot "dist\revenix-linux-agent-$Arch.tar.gz"
@@ -67,3 +88,4 @@ else {
 
 Write-Host "Linux agent bundle created at: $outDir"
 Write-Host "Image tag inside bundle: $ImageName"
+Write-Host "Firewall image tag inside bundle: $FirewallImageName"
