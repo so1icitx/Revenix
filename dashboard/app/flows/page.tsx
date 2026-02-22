@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
-import { formatSofiaDateTime } from '../../lib/time'
-import { Search, SlidersHorizontal, ArrowUpDown, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { formatSofiaDateTime, formatSofiaTime } from '../../lib/time'
+import { Search, SlidersHorizontal, ArrowUpDown, X, RefreshCw, ChevronDown } from 'lucide-react'
 import { API_URL } from '../../lib/api-config'
 
 interface Flow {
+  id?: number
   hostname: string
   src_ip: string
   dst_ip: string
@@ -21,6 +22,13 @@ interface Flow {
 type SortField = 'packets' | 'bytes' | 'end_ts' | 'hostname'
 type SortDirection = 'asc' | 'desc'
 
+const FLOW_PAGE_SIZE = 250
+
+const flowKey = (flow: Flow): string =>
+  flow.id
+    ? `id-${flow.id}`
+    : `${flow.hostname}-${flow.src_ip}-${flow.dst_ip}-${flow.src_port}-${flow.dst_port}-${flow.end_ts}`
+
 export default function FlowsPage() {
   const [flows, setFlows] = useState<Flow[]>([])
   const [searchIP, setSearchIP] = useState('')
@@ -30,20 +38,64 @@ export default function FlowsPage() {
   const [sortField, setSortField] = useState<SortField>('packets')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [showFilters, setShowFilters] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+
+  const fetchPage = async (offset: number, append: boolean) => {
+    const response = await fetch(`${API_URL}/flows/recent?limit=${FLOW_PAGE_SIZE}&offset=${offset}`)
+    if (!response.ok) throw new Error('Failed to fetch flows')
+    const data = await response.json()
+    const rows: Flow[] = Array.isArray(data) ? data : []
+
+    setHasMore(rows.length === FLOW_PAGE_SIZE)
+    setLastUpdated(new Date())
+
+    if (!append) {
+      setFlows(rows)
+      return
+    }
+
+    setFlows((prev) => {
+      const seen = new Set(prev.map(flowKey))
+      const merged = [...prev]
+      for (const row of rows) {
+        const key = flowKey(row)
+        if (!seen.has(key)) {
+          merged.push(row)
+          seen.add(key)
+        }
+      }
+      return merged
+    })
+  }
+
+  const refreshFlows = async () => {
+    setLoading(true)
+    try {
+      await fetchPage(0, false)
+    } catch (error) {
+      console.error('[Flows] Refresh error:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadMore = async () => {
+    if (loadingMore || !hasMore) return
+    setLoadingMore(true)
+    try {
+      await fetchPage(flows.length, true)
+    } catch (error) {
+      console.error('[Flows] Load more error:', error)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   useEffect(() => {
-    const fetchFlows = async () => {
-      try {
-        const response = await fetch(`${API_URL}/flows/recent`)
-        if (!response.ok) throw new Error('Failed to fetch')
-        setFlows(await response.json())
-      } catch (error) {
-        console.error('[Flows] Fetch error:', error)
-      }
-    }
-    fetchFlows()
-    const interval = setInterval(fetchFlows, 2000)
-    return () => clearInterval(interval)
+    void refreshFlows()
   }, [])
 
   const protocols = useMemo(() => {
@@ -51,7 +103,7 @@ export default function FlowsPage() {
   }, [flows])
 
   const filteredFlows = useMemo(() => {
-    let filtered = flows
+    let filtered = [...flows]
     if (protocolFilter !== 'all') filtered = filtered.filter(f => f.protocol === protocolFilter)
     if (searchIP.trim()) {
       const s = searchIP.trim().toLowerCase()
@@ -106,20 +158,29 @@ export default function FlowsPage() {
           <h1 className="text-2xl font-semibold text-foreground">Network Flows</h1>
           <p className="text-sm text-muted-foreground mt-0.5">Historical flow data and aggregated traffic</p>
         </div>
-        <button
-          onClick={() => setShowFilters(!showFilters)}
-          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
-            showFilters || hasActiveFilters
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-card text-muted-foreground border border-border hover:border-border-hover'
-          }`}
-        >
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-          Filters {hasActiveFilters && `(${[searchIP, searchDevice, searchPort, protocolFilter !== 'all'].filter(Boolean).length})`}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowFilters(!showFilters)}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+              showFilters || hasActiveFilters
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-card text-muted-foreground border border-border hover:border-border-hover'
+            }`}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            Filters {hasActiveFilters && `(${[searchIP, searchDevice, searchPort, protocolFilter !== 'all'].filter(Boolean).length})`}
+          </button>
+          <button
+            onClick={refreshFlows}
+            disabled={loading}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium bg-card text-muted-foreground border border-border hover:border-border-hover disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
-      {/* Filter Panel */}
       {showFilters && (
         <div className="card-surface p-4 animate-fadeIn">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -165,11 +226,10 @@ export default function FlowsPage() {
       )}
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Showing {filteredFlows.length} of {flows.length} flows</span>
-        <span>Sorted by: {sortField} ({sortDirection === 'desc' ? 'highest first' : 'lowest first'})</span>
+        <span>Showing {filteredFlows.length} of {flows.length} loaded flows</span>
+        <span>{lastUpdated ? `Updated ${formatSofiaTime(lastUpdated)}` : 'Not updated yet'}</span>
       </div>
 
-      {/* Table */}
       <div className="card-surface overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -203,8 +263,8 @@ export default function FlowsPage() {
               {filteredFlows.length === 0 ? (
                 <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground text-sm">{hasActiveFilters ? 'No flows match your filters' : 'No flows available'}</td></tr>
               ) : (
-                filteredFlows.map((flow, idx) => (
-                  <tr key={idx} className="border-b border-border last:border-0 hover:bg-muted/50 transition-colors">
+                filteredFlows.map((flow) => (
+                  <tr key={flowKey(flow)} className="border-b border-border last:border-0 hover:bg-muted/50 transition-colors">
                     <td className="px-4 py-2.5 text-sm text-primary font-medium">{flow.hostname}</td>
                     <td className="px-4 py-2.5 text-sm font-mono text-muted-foreground">{flow.src_ip}</td>
                     <td className="px-4 py-2.5 text-sm font-mono text-muted-foreground">{flow.dst_ip}</td>
@@ -223,6 +283,19 @@ export default function FlowsPage() {
           </table>
         </div>
       </div>
+
+      {!hasActiveFilters && (
+        <div className="flex justify-center">
+          <button
+            onClick={loadMore}
+            disabled={loadingMore || !hasMore}
+            className="flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-card border border-border hover:border-border-hover text-muted-foreground hover:text-foreground disabled:opacity-60"
+          >
+            <ChevronDown className="w-4 h-4" />
+            {loadingMore ? 'Loading...' : hasMore ? 'Load More' : 'No More Flows'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

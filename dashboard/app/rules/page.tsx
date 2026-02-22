@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { formatSofiaDateTime, formatSofiaTime } from '../../lib/time'
+import { API_URL } from '../../lib/api-config'
 
 interface Rule {
     id: number
@@ -22,6 +23,7 @@ interface Rule {
 export default function RulesPage() {
     const [rules, setRules] = useState<Rule[]>([])
     const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+    const [processingRuleId, setProcessingRuleId] = useState<number | null>(null)
 
     useEffect(() => {
         fetchRules()
@@ -39,6 +41,38 @@ export default function RulesPage() {
             }
         } catch (error) {
             console.error('Failed to fetch rules:', error)
+        }
+    }
+
+    const applyRule = async (ruleId: number) => {
+        setProcessingRuleId(ruleId)
+        try {
+            const response = await fetch(`${API_URL}/rules/${ruleId}/apply`, { method: 'POST' })
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}))
+                throw new Error(error.detail || 'Failed to apply rule')
+            }
+            await fetchRules()
+        } catch (error) {
+            console.error('Failed to apply rule:', error)
+        } finally {
+            setProcessingRuleId(null)
+        }
+    }
+
+    const rejectRule = async (ruleId: number) => {
+        setProcessingRuleId(ruleId)
+        try {
+            const response = await fetch(`${API_URL}/rules/${ruleId}/reject`, { method: 'POST' })
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}))
+                throw new Error(error.detail || 'Failed to reject rule')
+            }
+            await fetchRules()
+        } catch (error) {
+            console.error('Failed to reject rule:', error)
+        } finally {
+            setProcessingRuleId(null)
         }
     }
 
@@ -129,12 +163,15 @@ export default function RulesPage() {
                                     <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
                                         Time
                                     </th>
+                                    <th className="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                                        Controls
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-800">
                                 {rules.length === 0 ? (
                                     <tr>
-                                        <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
+                                        <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
                                             No rule recommendations yet
                                         </td>
                                     </tr>
@@ -215,6 +252,30 @@ export default function RulesPage() {
                                                     minute: '2-digit',
                                                     second: '2-digit',
                                                 })}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {rule.status === 'pending' ? (
+                                                    <div className="flex items-center gap-2">
+                                                        {rule.action?.toUpperCase() === 'BLOCK' && (
+                                                            <button
+                                                                onClick={() => applyRule(rule.id)}
+                                                                disabled={processingRuleId === rule.id}
+                                                                className="px-3 py-1.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 text-xs font-medium disabled:opacity-50"
+                                                            >
+                                                                {processingRuleId === rule.id ? 'Applying...' : 'Apply'}
+                                                            </button>
+                                                        )}
+                                                        <button
+                                                            onClick={() => rejectRule(rule.id)}
+                                                            disabled={processingRuleId === rule.id}
+                                                            className="px-3 py-1.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-medium disabled:opacity-50"
+                                                        >
+                                                            {rule.action?.toUpperCase() === 'BLOCK' ? 'Reject' : 'Dismiss'}
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-xs text-gray-500">No actions</span>
+                                                )}
                                             </td>
                                         </tr>
                                     ))

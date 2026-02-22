@@ -21,13 +21,52 @@ export default function AlertingPage() {
   const [webhooks, setWebhooks] = useState<AlertingWebhook[]>([])
   const [showAddModal, setShowAddModal] = useState(false)
   const [testResults, setTestResults] = useState<Record<number, { status: string; success?: boolean }>>({})
+  const [loading, setLoading] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [pageError, setPageError] = useState<string | null>(null)
   const [newWebhook, setNewWebhook] = useState({ name: "", url: "", type: "slack", events: ["critical", "high"] })
 
-  const fetchWebhooks = async () => { try { const r = await fetch(`${API_URL}/alerting/webhooks`); if (r.ok) setWebhooks(await r.json()) } catch {} }
+  const fetchWebhooks = async () => {
+    try {
+      setPageError(null)
+      const r = await fetch(`${API_URL}/alerting/webhooks`)
+      if (!r.ok) {
+        const text = await r.text()
+        throw new Error(text || `HTTP ${r.status}`)
+      }
+      setWebhooks(await r.json())
+    } catch (err: any) {
+      setPageError(err?.message || "Failed to load integrations")
+    }
+  }
   useEffect(() => { fetchWebhooks() }, [])
 
   const handleAddWebhook = async () => {
-    try { const r = await fetch(`${API_URL}/alerting/webhooks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newWebhook) }); if (r.ok) { setShowAddModal(false); setNewWebhook({ name: "", url: "", type: "slack", events: ["critical", "high"] }); fetchWebhooks() } } catch {}
+    try {
+      setFormError(null)
+      setLoading(true)
+      const payload = {
+        ...newWebhook,
+        enabled: true,
+        headers: {},
+      }
+      const r = await fetch(`${API_URL}/alerting/webhooks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok || data?.status === "error") {
+        throw new Error(data?.detail || data?.message || `Failed to add integration (${r.status})`)
+      }
+      setShowAddModal(false)
+      setNewWebhook({ name: "", url: "", type: "slack", events: ["critical", "high"] })
+      await fetchWebhooks()
+    } catch (err: any) {
+      setFormError(err?.message || "Failed to add integration")
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleDeleteWebhook = async (id: number) => { try { await fetch(`${API_URL}/alerting/webhooks/${id}`, { method: "DELETE" }); fetchWebhooks() } catch {} }
@@ -50,6 +89,12 @@ export default function AlertingPage() {
           <Plus className="w-3.5 h-3.5" /> Add Integration
         </button>
       </div>
+
+      {pageError && (
+        <div className="card-surface p-3 border border-danger/30 bg-danger/5 text-danger text-sm">
+          {pageError}
+        </div>
+      )}
 
       {/* Integration Type Cards */}
       <div className="grid grid-cols-5 gap-3">
@@ -89,6 +134,7 @@ export default function AlertingPage() {
               <tbody>
                 {webhooks.map((webhook) => {
                   const typeInfo = getTypeInfo(webhook.type)
+                  const events = Array.isArray(webhook.events) ? webhook.events : []
                   return (
                     <tr key={webhook.id} className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors">
                       <td className="px-4 py-2.5">
@@ -101,7 +147,7 @@ export default function AlertingPage() {
                       <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono max-w-[200px] truncate">{webhook.url}</td>
                       <td className="px-4 py-2.5">
                         <div className="flex gap-1 flex-wrap">
-                          {webhook.events.map((event) => (
+                          {events.map((event) => (
                             <span key={event} className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${sevColors[event] || "bg-muted text-muted-foreground border-border"}`}>{event}</span>
                           ))}
                         </div>
@@ -138,6 +184,11 @@ export default function AlertingPage() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setShowAddModal(false)}>
           <div className="bg-card border border-border rounded-xl max-w-lg w-full p-6 animate-fadeIn" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-lg font-semibold text-foreground mb-5 flex items-center gap-2"><Bell className="w-4 h-4 text-primary" /> Add Integration</h2>
+            {formError && (
+              <div className="mb-4 px-3 py-2 rounded-lg bg-danger/10 border border-danger/30 text-danger text-xs">
+                {formError}
+              </div>
+            )}
             <div className="space-y-4">
               <div>
                 <label className="block text-[10px] text-muted-foreground mb-2 uppercase tracking-wider">Type</label>
@@ -171,7 +222,9 @@ export default function AlertingPage() {
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button onClick={() => setShowAddModal(false)} className="px-4 py-2 bg-muted hover:bg-border-hover text-foreground text-sm rounded-lg transition-colors font-medium">Cancel</button>
-              <button onClick={handleAddWebhook} disabled={!newWebhook.name || !newWebhook.url} className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-sm rounded-lg font-medium transition-colors disabled:opacity-50">Add</button>
+              <button onClick={handleAddWebhook} disabled={loading || !newWebhook.name || !newWebhook.url} className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-sm rounded-lg font-medium transition-colors disabled:opacity-50">
+                {loading ? "Adding..." : "Add"}
+              </button>
             </div>
           </div>
         </div>

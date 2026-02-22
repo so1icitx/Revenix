@@ -2,7 +2,7 @@
 
 import { API_URL } from '../../lib/api-config'
 import { useEffect, useState } from "react"
-import { Laptop, Activity, Brain, CheckCircle, Clock, Server, Shield, RefreshCw } from "lucide-react"
+import { Laptop, Activity, Brain, CheckCircle, Clock, Server, Shield, RefreshCw, Play, Square } from "lucide-react"
 
 interface DeviceProfile {
   hostname: string
@@ -21,10 +21,24 @@ interface DeviceProfile {
   }
 }
 
+interface SystemStatus {
+  learning_phase: "idle" | "learning" | "active"
+  flows_collected: number
+  training_threshold: number
+  is_trained: boolean
+}
+
 export default function EndpointsPage() {
   const [devices, setDevices] = useState<DeviceProfile[]>([])
   const [totalFlows, setTotalFlows] = useState<number>(0)
   const [dbFlowCounts, setDbFlowCounts] = useState<Record<string, number>>({})
+  const [systemStatus, setSystemStatus] = useState<SystemStatus>({
+    learning_phase: "idle",
+    flows_collected: 0,
+    training_threshold: 200,
+    is_trained: false,
+  })
+  const [isTogglingLearning, setIsTogglingLearning] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -32,9 +46,10 @@ export default function EndpointsPage() {
     const fetchDevices = async () => {
       try {
         setError(null)
-        const [profilesRes, dbRes] = await Promise.all([
+        const [profilesRes, dbRes, statusRes] = await Promise.all([
           fetch(`${API_URL}/devices/profiles`),
           fetch(`${API_URL}/flows/count-by-device`),
+          fetch(`${API_URL}/system/learning-status`),
         ])
         if (profilesRes.ok) {
           const data = await profilesRes.json()
@@ -44,6 +59,7 @@ export default function EndpointsPage() {
           setError(`API returned ${profilesRes.status}`)
         }
         if (dbRes.ok) setDbFlowCounts(await dbRes.json() || {})
+        if (statusRes.ok) setSystemStatus(await statusRes.json())
       } catch (err) {
         setError("Unable to connect to API")
       } finally {
@@ -60,6 +76,39 @@ export default function EndpointsPage() {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
+
+  const handleToggleLearning = async () => {
+    if (isTogglingLearning) return
+    setIsTogglingLearning(true)
+    try {
+      if (systemStatus.learning_phase === "idle") {
+        const response = await fetch(`${API_URL}/system/start-learning`, { method: "POST" })
+        if (response.ok) setSystemStatus((prev) => ({ ...prev, learning_phase: "learning" }))
+      } else if (systemStatus.learning_phase === "learning") {
+        const response = await fetch(`${API_URL}/system/stop-learning`, { method: "POST" })
+        if (response.ok) setSystemStatus((prev) => ({ ...prev, learning_phase: "active", is_trained: true }))
+      }
+    } catch (toggleErr) {
+      // Silent fail
+    } finally {
+      setIsTogglingLearning(false)
+    }
+  }
+
+  const getStatusIndicator = () => {
+    switch (systemStatus.learning_phase) {
+      case "idle":
+        return { color: "bg-muted-foreground", label: "Idle" }
+      case "learning":
+        return { color: "bg-warning", label: `Learning (${systemStatus.flows_collected}/${systemStatus.training_threshold})` }
+      case "active":
+        return { color: "bg-safe", label: "Protected" }
+      default:
+        return { color: "bg-muted-foreground", label: "Unknown" }
+    }
+  }
+
+  const status = getStatusIndicator()
 
   if (loading) {
     return (
@@ -89,9 +138,43 @@ export default function EndpointsPage() {
             <p className="text-sm text-muted-foreground">Connected devices with AI behavioral analysis</p>
           </div>
         </div>
-        <div className="card-surface px-4 py-2">
-          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Total Flows</p>
-          <p className="text-lg font-semibold text-foreground">{totalFlows.toLocaleString()}</p>
+        <div className="flex items-center gap-3">
+          <div className="card-surface px-4 py-2 min-w-[260px]">
+            <div className="flex items-center gap-2">
+              <div className={`w-1.5 h-1.5 rounded-full ${status.color}`} />
+              <span className="text-xs text-muted-foreground">{status.label}</span>
+              {systemStatus.learning_phase === "idle" && (
+                <button
+                  onClick={handleToggleLearning}
+                  disabled={isTogglingLearning}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded text-[11px] font-medium transition disabled:opacity-50 ml-1"
+                >
+                  <Play className="w-2.5 h-2.5" />
+                  Start
+                </button>
+              )}
+              {systemStatus.learning_phase === "learning" && (
+                <button
+                  onClick={handleToggleLearning}
+                  disabled={isTogglingLearning}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-safe hover:bg-safe/90 text-background rounded text-[11px] font-medium transition disabled:opacity-50 ml-1"
+                >
+                  <Square className="w-2.5 h-2.5" />
+                  Activate
+                </button>
+              )}
+              {systemStatus.learning_phase === "active" && (
+                <span className="flex items-center gap-1 px-2 py-0.5 bg-safe/10 rounded text-[11px] text-safe font-medium ml-1">
+                  <CheckCircle className="w-2.5 h-2.5" />
+                  Active
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="card-surface px-4 py-2">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Total Flows</p>
+            <p className="text-lg font-semibold text-foreground">{totalFlows.toLocaleString()}</p>
+          </div>
         </div>
       </div>
 

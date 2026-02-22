@@ -2,7 +2,7 @@
 
 import { API_URL } from '../../lib/api-config'
 import { useEffect, useState } from 'react'
-import { Activity, Server, Database, Zap, AlertCircle, CheckCircle, Clock } from 'lucide-react'
+import { Activity, Server, Zap, AlertCircle, CheckCircle, Clock } from 'lucide-react'
 
 interface ServiceStatus {
   name: string
@@ -13,6 +13,7 @@ interface ServiceStatus {
 interface SystemMetrics {
   services: ServiceStatus[]
   flowsProcessed: number
+  activeFlows: number
   alertsGenerated: number
   threatsBlocked: number
   lastUpdate: string
@@ -43,16 +44,17 @@ export default function SystemHealthPage() {
           services.push({ name: 'Database', status: flowsRes.ok ? 'healthy' : 'degraded', lastCheck: new Date().toLocaleTimeString() })
         } catch { services.push({ name: 'Database', status: 'down', lastCheck: new Date().toLocaleTimeString() }) }
 
-        const [flowsRes, alertsRes] = await Promise.all([
-          fetch(`${API_URL}/flows/recent`).catch(() => null),
+        const [flowStatsRes, alertsRes] = await Promise.all([
+          fetch(`${API_URL}/flows/live-stats?window_seconds=30`).catch(() => null),
           fetch(`${API_URL}/alerts/recent`).catch(() => null),
         ])
-        const flows = flowsRes && flowsRes.ok ? await flowsRes.json() : []
+        const flowStats = flowStatsRes && flowStatsRes.ok ? await flowStatsRes.json() : null
         const alerts = alertsRes && alertsRes.ok ? await alertsRes.json() : []
 
         setMetrics({
           services,
-          flowsProcessed: Array.isArray(flows) ? flows.length : 0,
+          flowsProcessed: Number(flowStats?.total_flows || 0),
+          activeFlows: Number(flowStats?.active_flows || 0),
           alertsGenerated: Array.isArray(alerts) ? alerts.length : 0,
           threatsBlocked: Array.isArray(alerts) ? alerts.filter((a: any) => a.severity === 'critical').length : 0,
           lastUpdate: new Date().toLocaleTimeString(),
@@ -148,9 +150,10 @@ export default function SystemHealthPage() {
           </div>
 
           {/* Metrics */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {[
               { icon: Zap, color: 'text-primary', bg: 'bg-primary/10', label: 'Flows Processed', value: metrics?.flowsProcessed.toLocaleString() },
+              { icon: Activity, color: 'text-accent', bg: 'bg-accent/10', label: 'Active Flows (30s)', value: metrics?.activeFlows.toLocaleString() },
               { icon: AlertCircle, color: 'text-warning', bg: 'bg-warning/10', label: 'Alerts Generated', value: metrics?.alertsGenerated },
               { icon: Server, color: 'text-danger', bg: 'bg-danger/10', label: 'Critical Threats', value: metrics?.threatsBlocked },
             ].map((metric) => (

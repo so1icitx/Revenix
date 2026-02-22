@@ -2,7 +2,7 @@
 
 import { API_URL } from '../../lib/api-config'
 import { useEffect, useState } from "react"
-import { Shield, XCircle, ChevronRight } from "lucide-react"
+import { Shield, XCircle, ChevronRight, Trash2 } from "lucide-react"
 import { formatSofiaDateTime } from "../../lib/time"
 import { ThreatAnalysis } from "../../components/threat-analysis"
 
@@ -70,6 +70,9 @@ export default function ThreatsPage() {
   const [severityFilter, setSeverityFilter] = useState<string>("all")
   const [timeFilter, setTimeFilter] = useState(timeRanges[2])
   const [searchQuery, setSearchQuery] = useState("")
+  const [selectedAlertIds, setSelectedAlertIds] = useState<number[]>([])
+  const [deletingAlertId, setDeletingAlertId] = useState<number | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -85,6 +88,10 @@ export default function ThreatsPage() {
     const interval = setInterval(fetchAlerts, 5000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    setSelectedAlertIds((prev) => prev.filter((id) => alerts.some((a) => a.id === id)))
+  }, [alerts])
 
   const filteredAlerts = alerts.filter((alert) => {
     const severityMatch = severityFilter === "all" || alert.severity?.toLowerCase() === severityFilter
@@ -119,6 +126,78 @@ export default function ThreatsPage() {
       setBlockStatus({ ...blockStatus, [ip]: "error" })
     } finally {
       setBlockingIP(null)
+    }
+  }
+
+  const toggleSelectAlert = (alertId: number) => {
+    setSelectedAlertIds((prev) => (
+      prev.includes(alertId)
+        ? prev.filter((id) => id !== alertId)
+        : [...prev, alertId]
+    ))
+  }
+
+  const filteredAlertIds = filteredAlerts.map((alert) => alert.id)
+  const selectedFilteredCount = filteredAlertIds.filter((id) => selectedAlertIds.includes(id)).length
+  const allFilteredSelected = filteredAlertIds.length > 0 && selectedFilteredCount === filteredAlertIds.length
+
+  const toggleSelectFiltered = () => {
+    if (allFilteredSelected) {
+      setSelectedAlertIds((prev) => prev.filter((id) => !filteredAlertIds.includes(id)))
+      return
+    }
+    setSelectedAlertIds((prev) => {
+      const merged = new Set(prev)
+      filteredAlertIds.forEach((id) => merged.add(id))
+      return Array.from(merged)
+    })
+  }
+
+  const handleDeleteSingleAlert = async (alertId: number) => {
+    const confirmed = window.confirm(`Delete alert #${alertId}?`)
+    if (!confirmed) return
+
+    setDeleteError(null)
+    setDeletingAlertId(alertId)
+    try {
+      const response = await fetch(`${API_URL}/alerts/${alertId}`, { method: "DELETE" })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+      setAlerts((prev) => prev.filter((alert) => alert.id !== alertId))
+      setSelectedAlertIds((prev) => prev.filter((id) => id !== alertId))
+      if (selectedAlert?.id === alertId) setSelectedAlert(null)
+    } catch (error: any) {
+      setDeleteError(`Failed to delete alert #${alertId}`)
+    } finally {
+      setDeletingAlertId(null)
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    if (selectedAlertIds.length === 0) return
+    const confirmed = window.confirm(`Delete ${selectedAlertIds.length} selected alerts?`)
+    if (!confirmed) return
+
+    setDeleteError(null)
+    setDeletingAlertId(-1)
+    try {
+      const response = await fetch(`${API_URL}/alerts/delete-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alert_ids: selectedAlertIds }),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data = await response.json().catch(() => ({}))
+      const deletedIds = Array.isArray(data?.deleted_ids) ? data.deleted_ids : selectedAlertIds
+      const deletedSet = new Set<number>(deletedIds.map((id: any) => Number(id)))
+
+      setAlerts((prev) => prev.filter((alert) => !deletedSet.has(alert.id)))
+      setSelectedAlertIds([])
+      if (selectedAlert && deletedSet.has(selectedAlert.id)) setSelectedAlert(null)
+    } catch (error: any) {
+      setDeleteError("Failed to delete selected alerts")
+    } finally {
+      setDeletingAlertId(null)
     }
   }
 
@@ -196,7 +275,27 @@ export default function ThreatsPage() {
               className="w-full px-4 py-2 bg-muted border border-border rounded-lg text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary transition-colors"
             />
           </div>
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              onClick={toggleSelectFiltered}
+              disabled={filteredAlerts.length === 0}
+              className="px-3 py-2 bg-muted hover:bg-border border border-border text-muted-foreground hover:text-foreground text-xs rounded-lg transition disabled:opacity-50"
+            >
+              {allFilteredSelected ? "Unselect Filtered" : "Select Filtered"}
+            </button>
+            <button
+              onClick={handleDeleteSelected}
+              disabled={selectedAlertIds.length === 0 || deletingAlertId === -1}
+              className="px-3 py-2 bg-danger/10 hover:bg-danger/20 border border-danger/30 text-danger text-xs rounded-lg transition disabled:opacity-50 flex items-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {deletingAlertId === -1 ? "Deleting..." : `Delete Selected (${selectedAlertIds.length})`}
+            </button>
+          </div>
         </div>
+        {deleteError && (
+          <p className="mt-3 text-xs text-danger">{deleteError}</p>
+        )}
       </div>
 
       {/* Threats List */}
@@ -216,6 +315,14 @@ export default function ThreatsPage() {
                 onClick={() => setSelectedAlert(alert)}
               >
                 <div className="flex items-center gap-4">
+                  <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedAlertIds.includes(alert.id)}
+                      onChange={() => toggleSelectAlert(alert.id)}
+                      className="w-4 h-4 rounded border-border bg-muted text-primary focus:ring-primary/30"
+                    />
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2.5 mb-1">
                       <span className={`text-xs font-semibold uppercase ${getSeverityColor(alert.severity)}`}>{alert.severity}</span>
@@ -236,6 +343,14 @@ export default function ThreatsPage() {
                     <p className="text-[11px] text-muted-foreground">{alert.hostname}</p>
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => handleDeleteSingleAlert(alert.id)}
+                      disabled={deletingAlertId === alert.id}
+                      className="px-2.5 py-1.5 bg-muted hover:bg-danger/10 text-muted-foreground hover:text-danger text-xs rounded-lg transition border border-border disabled:opacity-50"
+                      title="Delete alert"
+                    >
+                      {deletingAlertId === alert.id ? "..." : "Delete"}
+                    </button>
                     {blockState === "success" ? (
                       <span className="text-safe text-xs px-3 py-1.5 font-medium">Blocked</span>
                     ) : blockState === "error" ? (
@@ -295,6 +410,13 @@ export default function ThreatsPage() {
               </p>
               <div className="flex gap-2">
                 <button onClick={() => setSelectedAlert(null)} className="px-4 py-2 bg-muted hover:bg-border text-foreground text-sm rounded-lg transition font-medium">Close</button>
+                <button
+                  onClick={() => handleDeleteSingleAlert(selectedAlert.id)}
+                  disabled={deletingAlertId === selectedAlert.id}
+                  className="px-4 py-2 bg-danger/10 hover:bg-danger/20 text-danger text-sm rounded-lg transition border border-danger/30 disabled:opacity-50 font-medium"
+                >
+                  {deletingAlertId === selectedAlert.id ? "Deleting..." : "Delete Alert"}
+                </button>
                 {blockStatus[selectedAlert.src_ip] !== "success" && (
                   <button
                     onClick={() => handleBlockIP(selectedAlert.src_ip, selectedAlert.id)}

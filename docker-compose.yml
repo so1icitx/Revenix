@@ -31,7 +31,7 @@ services:
     image: redis:latest
     command: redis-server --bind 0.0.0.0 --requirepass ${REDIS_PASSWORD:-CHANGE_ME_REDIS_PASSWORD}
     ports:
-      - "127.0.0.1:6379:6379"
+      - "0.0.0.0:6379:6379"
     networks:
       - revenix-net
     healthcheck:

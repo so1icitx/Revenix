@@ -5,27 +5,19 @@ import { useEffect, useState, useRef } from "react"
 import { usePathname } from "next/navigation"
 import {
   Bell,
-  Shield,
   AlertCircle,
   ChevronDown,
   LogOut,
   Settings,
-  Play,
-  Square,
-  CheckCircle,
   Search,
   Command,
+  Clock3,
 } from "lucide-react"
 import { formatSofiaTime } from "../lib/time"
 import { getCurrentUser, logout } from "../lib/auth"
 import { useAppShell } from "./app-shell"
 
-interface SystemStatus {
-  learning_phase: "idle" | "learning" | "active"
-  flows_collected: number
-  training_threshold: number
-  is_trained: boolean
-}
+const CLEARED_ALERTS_STORAGE_KEY = "revenix_alerts_cleared_before"
 
 export function TopBar() {
   const [lastSync, setLastSync] = useState<Date>(new Date())
@@ -33,13 +25,7 @@ export function TopBar() {
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [alerts, setAlerts] = useState<any[]>([])
   const [user, setUser] = useState<{ username: string; email: string } | null>(null)
-  const [systemStatus, setSystemStatus] = useState<SystemStatus>({
-    learning_phase: "idle",
-    flows_collected: 0,
-    training_threshold: 200,
-    is_trained: false,
-  })
-  const [isToggling, setIsToggling] = useState(false)
+  const [clearedAlertsBefore, setClearedAlertsBefore] = useState<number>(0)
   const notificationRef = useRef<HTMLDivElement>(null)
   const userMenuRef = useRef<HTMLDivElement>(null)
   const pathname = usePathname()
@@ -47,8 +33,16 @@ export function TopBar() {
   const { setCommandPaletteOpen } = useAppShell()
 
   useEffect(() => {
-    const interval = setInterval(() => setLastSync(new Date()), 2000)
+    const interval = setInterval(() => setLastSync(new Date()), 1000)
     return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(CLEARED_ALERTS_STORAGE_KEY)
+    if (!stored) return
+    const parsed = Number(stored)
+    if (!Number.isFinite(parsed) || parsed <= 0) return
+    setClearedAlertsBefore(parsed)
   }, [])
 
   useEffect(() => {
@@ -80,27 +74,16 @@ export function TopBar() {
 
   useEffect(() => {
     if (!user || isAuthPage) return
-    const fetchSystemStatus = async () => {
-      try {
-        const response = await fetch(`${API_URL}/system/learning-status`)
-        if (response.ok) setSystemStatus(await response.json())
-      } catch (error) {
-        // Silent fail
-      }
-    }
-    fetchSystemStatus()
-    const interval = setInterval(fetchSystemStatus, 3000)
-    return () => clearInterval(interval)
-  }, [user, isAuthPage])
-
-  useEffect(() => {
-    if (!user || isAuthPage) return
     const fetchAlerts = async () => {
       try {
-        const response = await fetch(`${API_URL}/alerts/recent`)
+        const response = await fetch(`${API_URL}/alerts/recent?limit=25`)
         if (response.ok) {
           const data = await response.json()
-          setAlerts(data.slice(0, 5))
+          const filtered = data.filter((alert: any) => {
+            const ts = Number(alert?.timestamp || 0)
+            return clearedAlertsBefore === 0 || ts > clearedAlertsBefore
+          })
+          setAlerts(filtered.slice(0, 5))
         }
       } catch (error) {
         // Silent fail
@@ -109,30 +92,19 @@ export function TopBar() {
     fetchAlerts()
     const interval = setInterval(fetchAlerts, 10000)
     return () => clearInterval(interval)
-  }, [user, isAuthPage])
-
-  const handleToggleLearning = async () => {
-    if (isToggling) return
-    setIsToggling(true)
-    try {
-      if (systemStatus.learning_phase === "idle") {
-        const response = await fetch(`${API_URL}/system/start-learning`, { method: "POST" })
-        if (response.ok) setSystemStatus((prev) => ({ ...prev, learning_phase: "learning" }))
-      } else if (systemStatus.learning_phase === "learning") {
-        const response = await fetch(`${API_URL}/system/stop-learning`, { method: "POST" })
-        if (response.ok) setSystemStatus((prev) => ({ ...prev, learning_phase: "active", is_trained: true }))
-      }
-    } catch (error) {
-      console.error("Failed to toggle learning:", error)
-    } finally {
-      setIsToggling(false)
-    }
-  }
+  }, [user, isAuthPage, clearedAlertsBefore])
 
   const handleLogout = () => {
     logout()
     setUser(null)
     window.location.href = "/auth/login"
+  }
+
+  const handleClearNotifications = () => {
+    const clearTs = Math.floor(Date.now() / 1000)
+    setClearedAlertsBefore(clearTs)
+    setAlerts([])
+    window.localStorage.setItem(CLEARED_ALERTS_STORAGE_KEY, String(clearTs))
   }
 
   const getSeverityColor = (severity: string) => {
@@ -145,70 +117,32 @@ export function TopBar() {
     }
   }
 
-  const getStatusIndicator = () => {
-    switch (systemStatus.learning_phase) {
-      case "idle": return { color: "bg-muted-foreground", label: "Idle" }
-      case "learning": return { color: "bg-warning", label: `Learning (${systemStatus.flows_collected}/${systemStatus.training_threshold})` }
-      case "active": return { color: "bg-safe", label: "Protected" }
-      default: return { color: "bg-muted-foreground", label: "Unknown" }
-    }
-  }
-
   if (isAuthPage) return null
-  const status = getStatusIndicator()
 
   return (
-    <header className="h-14 bg-card border-b border-border flex items-center justify-between px-5 flex-shrink-0">
+    <header className="h-14 bg-card border-b border-border flex items-center justify-between px-5 flex-shrink-0 gap-4">
       {/* Left side */}
-      <div className="flex items-center gap-4">
-        {user && (
-          <div className="flex items-center gap-2.5 px-3 py-1.5 bg-muted rounded-lg">
-            <div className={`w-1.5 h-1.5 rounded-full ${status.color}`} />
-            <span className="text-xs text-muted-foreground">{status.label}</span>
-
-            {systemStatus.learning_phase === "idle" && (
-              <button
-                onClick={handleToggleLearning}
-                disabled={isToggling}
-                className="flex items-center gap-1 px-2 py-0.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded text-[11px] font-medium transition disabled:opacity-50 ml-1"
-              >
-                <Play className="w-2.5 h-2.5" />
-                Start
-              </button>
-            )}
-            {systemStatus.learning_phase === "learning" && (
-              <button
-                onClick={handleToggleLearning}
-                disabled={isToggling}
-                className="flex items-center gap-1 px-2 py-0.5 bg-safe hover:bg-safe/90 text-background rounded text-[11px] font-medium transition disabled:opacity-50 ml-1"
-              >
-                <Square className="w-2.5 h-2.5" />
-                Activate
-              </button>
-            )}
-            {systemStatus.learning_phase === "active" && (
-              <span className="flex items-center gap-1 px-2 py-0.5 bg-safe/10 rounded text-[11px] text-safe font-medium ml-1">
-                <CheckCircle className="w-2.5 h-2.5" />
-                Active
-              </span>
-            )}
+      <div className="flex-1 min-w-0">
+        <button
+          onClick={() => setCommandPaletteOpen(true)}
+          className="w-full max-w-[560px] flex items-center justify-between gap-3 px-4 py-2 bg-muted hover:bg-border-hover rounded-lg text-muted-foreground hover:text-foreground transition-colors text-sm"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <Search className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate text-left">Search pages, threats, flows...</span>
           </div>
-        )}
+          <kbd className="hidden lg:flex items-center gap-0.5 px-1.5 py-0.5 bg-background rounded text-[10px] text-muted-foreground border border-border flex-shrink-0">
+            <Command className="w-2.5 h-2.5" />K
+          </kbd>
+        </button>
       </div>
 
       {/* Right side */}
       <div className="flex items-center gap-2">
-        {/* Command palette trigger */}
-        <button
-          onClick={() => setCommandPaletteOpen(true)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-muted hover:bg-border-hover rounded-lg text-muted-foreground hover:text-foreground transition-colors text-xs"
-        >
-          <Search className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline">Search</span>
-          <kbd className="hidden lg:flex items-center gap-0.5 px-1.5 py-0.5 bg-background rounded text-[10px] text-muted-foreground border border-border">
-            <Command className="w-2.5 h-2.5" />K
-          </kbd>
-        </button>
+        <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-muted rounded-lg text-xs text-muted-foreground font-mono">
+          <Clock3 className="w-3.5 h-3.5" />
+          <span>{formatSofiaTime(lastSync)}</span>
+        </div>
 
         {/* Notifications */}
         {user && (
@@ -225,9 +159,18 @@ export function TopBar() {
 
             {showNotifications && (
               <div className="absolute top-full right-0 mt-2 w-80 bg-card border border-border rounded-xl shadow-2xl shadow-black/50 overflow-hidden z-50 animate-fadeIn">
-                <div className="p-4 border-b border-border">
-                  <h3 className="text-sm font-semibold text-foreground">Alerts</h3>
-                  <p className="text-[11px] text-muted-foreground">{alerts.length} recent</p>
+                <div className="p-4 border-b border-border flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">Alerts</h3>
+                    <p className="text-[11px] text-muted-foreground">{alerts.length} recent</p>
+                  </div>
+                  <button
+                    onClick={handleClearNotifications}
+                    disabled={alerts.length === 0}
+                    className="px-2.5 py-1 text-[11px] font-medium bg-muted hover:bg-border-hover text-muted-foreground hover:text-foreground rounded-md transition-colors disabled:opacity-50"
+                  >
+                    Clear
+                  </button>
                 </div>
                 {alerts.length === 0 ? (
                   <div className="p-8 text-center text-muted-foreground text-sm">No alerts</div>

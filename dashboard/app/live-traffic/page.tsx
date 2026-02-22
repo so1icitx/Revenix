@@ -15,6 +15,7 @@ import {
 } from 'recharts'
 
 interface Flow {
+  id?: number
   hostname: string
   src_ip: string
   dst_ip: string
@@ -26,6 +27,9 @@ interface Flow {
   end_ts: number
 }
 
+const LIVE_TRAFFIC_PAGE_SIZE = 250
+const LIVE_TRAFFIC_WINDOW_SECONDS = 30
+
 const tooltipStyle = {
   contentStyle: { backgroundColor: '#0F0F12', border: '1px solid #1E1E23', borderRadius: '8px', fontSize: '12px', color: '#FAFAFA' },
   labelStyle: { color: '#FAFAFA' },
@@ -34,28 +38,34 @@ const tooltipStyle = {
 
 export default function LiveTrafficPage() {
   const [flows, setFlows] = useState<Flow[]>([])
-  const [currentStats, setCurrentStats] = useState({ packets: 0, bytes: 0 })
-  const [chartData, setChartData] = useState<Array<{ time: string; packets: number; bytes: number }>>([])
-  const [activeFlowsCount, setActiveFlowsCount] = useState(0)
+  const [currentStats, setCurrentStats] = useState({ concurrent: 0, bytes: 0, totalFlows: 0 })
+  const [chartData, setChartData] = useState<Array<{ time: string; concurrent: number; bytes: number }>>([])
 
   useEffect(() => {
     const fetchFlows = async () => {
       try {
-        const response = await fetch(`${API_URL}/flows/recent`)
-        if (!response.ok) throw new Error('Failed to fetch')
-        const data = await response.json()
-        const now = Date.now() / 1000
-        const thirtySecondsAgo = now - 30
-        const recentFlows = data.filter((f: any) => f.end_ts >= thirtySecondsAgo)
-        const totalPackets = recentFlows.reduce((sum: number, f: any) => sum + (f.packets || 0), 0)
-        const totalBytes = recentFlows.reduce((sum: number, f: any) => sum + (f.bytes || 0), 0)
-        const packetsPerSec = Math.round(totalPackets / 30)
-        const bytesPerSec = Math.round(totalBytes / 30)
-        setCurrentStats({ packets: packetsPerSec, bytes: bytesPerSec })
-        setActiveFlowsCount(data.length)
-        setFlows(data)
+        const [flowsResponse, statsResponse] = await Promise.all([
+          fetch(`${API_URL}/flows/recent?limit=${LIVE_TRAFFIC_PAGE_SIZE}&offset=0`),
+          fetch(`${API_URL}/flows/live-stats?window_seconds=${LIVE_TRAFFIC_WINDOW_SECONDS}`),
+        ])
+        if (!flowsResponse.ok) throw new Error('Failed to fetch flows')
+
+        const data = await flowsResponse.json()
+        const rows = Array.isArray(data) ? data : []
+        const stats = statsResponse.ok ? await statsResponse.json() : null
+
+        const concurrentFlows = Number(stats?.active_flows || 0)
+        const bytesPerSec = Number(stats?.bytes_per_sec || 0)
+        const totalFlows = Number(stats?.total_flows || 0)
+
+        setCurrentStats({
+          concurrent: concurrentFlows,
+          bytes: bytesPerSec,
+          totalFlows,
+        })
+        setFlows(rows)
         setChartData(prev => {
-          const newPoint = { time: formatSofiaTime(Date.now()), packets: packetsPerSec, bytes: Math.round(bytesPerSec / 1024) }
+          const newPoint = { time: formatSofiaTime(Date.now()), concurrent: concurrentFlows, bytes: Math.round(bytesPerSec / 1024) }
           return [...prev.slice(-59), newPoint]
         })
       } catch (error) {
@@ -78,22 +88,22 @@ export default function LiveTrafficPage() {
     <div className="p-6 space-y-5 animate-fadeIn">
       <div>
         <h1 className="text-2xl font-semibold text-foreground">Live Traffic</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">Real-time packet analysis and flow data</p>
+        <p className="text-sm text-muted-foreground mt-0.5">Real-time concurrent traffic and flow data</p>
       </div>
 
       {/* Stats Row */}
       <div className="grid grid-cols-3 gap-3">
         <div className="card-surface p-4">
-          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Packets/sec</p>
-          <p className="text-2xl font-semibold text-primary mt-1">{currentStats.packets.toLocaleString()}</p>
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Concurrent Traffic</p>
+          <p className="text-2xl font-semibold text-primary mt-1">{currentStats.concurrent.toLocaleString()}</p>
         </div>
         <div className="card-surface p-4">
           <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Throughput</p>
           <p className="text-2xl font-semibold text-accent mt-1">{formatBytes(currentStats.bytes)}/s</p>
         </div>
         <div className="card-surface p-4">
-          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Active Flows</p>
-          <p className="text-2xl font-semibold text-foreground mt-1">{activeFlowsCount.toLocaleString()}</p>
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Stored Flows</p>
+          <p className="text-2xl font-semibold text-foreground mt-1">{currentStats.totalFlows.toLocaleString()}</p>
         </div>
       </div>
 
@@ -107,7 +117,7 @@ export default function LiveTrafficPage() {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full bg-primary" />
-              <span className="text-[11px] text-muted-foreground">Packets/sec</span>
+              <span className="text-[11px] text-muted-foreground">Concurrent Flows</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full bg-accent" />
@@ -123,7 +133,7 @@ export default function LiveTrafficPage() {
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={chartData}>
               <defs>
-                <linearGradient id="packetFill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="concurrentFill" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.15} />
                   <stop offset="95%" stopColor="#3B82F6" stopOpacity={0} />
                 </linearGradient>
@@ -136,7 +146,7 @@ export default function LiveTrafficPage() {
               <XAxis dataKey="time" stroke="#71717A" fontSize={10} tickLine={false} axisLine={false} />
               <YAxis stroke="#71717A" fontSize={10} tickLine={false} axisLine={false} />
               <Tooltip {...tooltipStyle} />
-              <Area type="monotone" dataKey="packets" stroke="#3B82F6" strokeWidth={1.5} fill="url(#packetFill)" name="Packets/sec" />
+              <Area type="monotone" dataKey="concurrent" stroke="#3B82F6" strokeWidth={1.5} fill="url(#concurrentFill)" name="Concurrent Flows" />
               <Area type="monotone" dataKey="bytes" stroke="#38BDF8" strokeWidth={1.5} fill="url(#byteFill)" name="KB/sec" />
             </AreaChart>
           </ResponsiveContainer>
