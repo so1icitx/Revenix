@@ -59,23 +59,28 @@ export function Sidebar() {
       }`}
     >
       {/* Logo */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-border">
-        <div className="flex items-center gap-3 min-w-0">
+      <div
+        className={`h-16 flex items-center border-b border-border ${
+          sidebarCollapsed ? "justify-center px-2 relative" : "justify-between px-4"
+        }`}
+      >
+        <div className={`flex items-center min-w-0 ${sidebarCollapsed ? "gap-0" : "gap-3"}`}>
           {imageError ? (
             <div className="w-8 h-8 rounded-lg flex-shrink-0 bg-primary flex items-center justify-center">
               <Shield className="w-4 h-4 text-primary-foreground" />
             </div>
           ) : (
-            <Image
-              src="/revenix.png"
-              alt="Revenix Logo"
-              width={32}
-              height={32}
-              className="flex-shrink-0 rounded-lg"
-              style={{ objectFit: "contain" }}
-              priority
-              onError={() => setImageError(true)}
-            />
+            <div className="w-8 h-8 flex-shrink-0 overflow-hidden rounded-lg">
+              <Image
+                src="/revenix.png"
+                alt="Revenix Logo"
+                width={32}
+                height={32}
+                className="w-full h-full object-contain scale-[1.12]"
+                priority
+                onError={() => setImageError(true)}
+              />
+            </div>
           )}
           {!sidebarCollapsed && (
             <div className="min-w-0">
@@ -86,7 +91,9 @@ export function Sidebar() {
         </div>
         <button
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+          className={`p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors flex-shrink-0 ${
+            sidebarCollapsed ? "absolute right-2 top-1/2 -translate-y-1/2" : ""
+          }`}
           aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           {sidebarCollapsed ? (

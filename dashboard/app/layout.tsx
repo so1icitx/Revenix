@@ -10,6 +10,9 @@ const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "Revenix - AI Firewall Dashboard",
   description: "Enterprise-grade AI-powered network security monitoring and threat intelligence",
+  icons: {
+    icon: "/icon.png",
+  },
 }
 
 export const viewport: Viewport = {

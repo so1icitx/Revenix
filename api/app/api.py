@@ -938,7 +938,7 @@ async def get_recent_alerts(
 
         return alerts
     except Exception as e:
-        print(f"[v0] Error fetching alerts: {e}")
+        print(f"[alerts] Error fetching alerts: {e}")
         import traceback
         traceback.print_exc()
         return []
