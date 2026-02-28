@@ -45,7 +45,7 @@ docker-compose down
 cd core
 .\scripts\build-windows-agent.ps1
 ```
-> VS build tools needed
+> VS build tools needed, also Rustup, but only on the main host
 
 Output: `core\dist\windows-agent\`
 
@@ -68,6 +68,15 @@ API_URL=http://<MAIN_HOST_IP>:8000
 REDIS_URL=redis://:<REDIS_PASSWORD>@<MAIN_HOST_IP>:6379
 REDIS_PASSWORD=<REDIS_PASSWORD>
 INTERNAL_SERVICE_TOKEN=<INTERNAL_SERVICE_TOKEN>
+FIREWALL_SYNC_ENABLED=true
+```
+
+> default config for testing
+```env
+API_URL=http://localhost:8000
+REDIS_URL=redis://:CHANGE_ME_REDIS_PASSWORD@localhost:6379
+REDIS_PASSWORD=CHANGE_ME_REDIS_PASSWORD
+INTERNAL_SERVICE_TOKEN=CHANGE_ME_INTERNAL_TOKEn
 FIREWALL_SYNC_ENABLED=true
 ```
 
