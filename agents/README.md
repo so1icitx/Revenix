@@ -45,6 +45,7 @@ docker-compose down
 cd core
 .\scripts\build-windows-agent.ps1
 ```
+> VS build tools needed
 
 Output: `core\dist\windows-agent\`
 
