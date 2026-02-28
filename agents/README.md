@@ -28,7 +28,7 @@ docker-compose down
 
 ```bash
 cd /path/to/revenix-public
-docker compose up -d --build
+docker-compose up -d --build
 ```
 
 Stop:
@@ -148,3 +148,4 @@ docker logs --tail 80 revenix-core-agent
 4. Verify `REDIS_PASSWORD` and `INTERNAL_SERVICE_TOKEN` in client `agent.env` match main host exactly.
 5. Generate traffic from client (`ping`, `curl`, browsing) and watch the dashboard.
 
+ 
