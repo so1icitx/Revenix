@@ -60,23 +60,23 @@ export function Sidebar() {
     >
       {/* Logo */}
       <div
-        className={`h-16 flex items-center border-b border-border ${
+        className={`h-20 flex items-center border-b border-border ${
           sidebarCollapsed ? "justify-center px-2 relative" : "justify-between px-4"
         }`}
       >
         <div className={`flex items-center min-w-0 ${sidebarCollapsed ? "gap-0" : "gap-3"}`}>
           {imageError ? (
-            <div className="w-8 h-8 rounded-lg flex-shrink-0 bg-primary flex items-center justify-center">
-              <Shield className="w-4 h-4 text-primary-foreground" />
+            <div className="w-12 h-12 rounded-lg flex-shrink-0 bg-primary flex items-center justify-center">
+              <Shield className="w-6 h-6 text-primary-foreground" />
             </div>
           ) : (
-            <div className="w-8 h-8 flex-shrink-0 overflow-hidden rounded-lg">
+            <div className="w-12 h-12 flex-shrink-0 overflow-hidden rounded-lg">
               <Image
                 src="/revenix.png"
                 alt="Revenix Logo"
-                width={32}
-                height={32}
-                className="w-full h-full object-contain scale-[1.12]"
+                width={48}
+                height={48}
+                className="w-full h-full object-cover scale-[1.25]"
                 priority
                 onError={() => setImageError(true)}
               />

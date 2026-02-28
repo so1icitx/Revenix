@@ -90,20 +90,22 @@ export default function LoginPage() {
       <div className="w-full max-w-sm p-6">
         <div className="text-center mb-8">
           {imageError ? (
-            <div className="inline-block p-3 bg-card rounded-xl mb-4 border border-border">
-              <Shield className="w-8 h-8 text-primary" />
+            <div className="inline-flex w-16 h-16 items-center justify-center bg-card rounded-xl mb-4 border border-border">
+              <Shield className="w-9 h-9 text-primary" />
             </div>
           ) : (
             <div className="inline-block mb-4">
+              <div className="relative w-16 h-16 rounded-xl overflow-hidden">
               <Image
                 src="/revenix.png"
                 alt="Revenix Logo"
-                width={48}
-                height={48}
-                className="rounded-xl"
+                fill
+                sizes="64px"
+                className="object-cover scale-[1.25]"
                 priority
                 onError={() => setImageError(true)}
               />
+              </div>
             </div>
           )}
           <h1 className="text-2xl font-semibold text-foreground">Revenix</h1>
